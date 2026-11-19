@@ -1,0 +1,197 @@
+from common import steps, tip, warn, need, items, tab, VERSION
+
+PAGES = []
+def M(**k):
+    k.setdefault('group', 'misc'); PAGES.append(k)
+
+M(id='size', nav='30MB と長さ・画質', title='30MB と長さ・画質の関係',
+lead='Cast Frost の素材は 1つ 30MB までです。動画は、長さから画質を逆算して、30MB 以内に収めて書き出します。',
+kw='30MB 容量 大きさ ビットレート 画質 長さ fps 解像度 下げる GPU A100 L4 T4 できること 秒',
+related=['g-video', 'g-castfrost', 'r-video'],
+body=f'''
+<h2>どうやって 30MB に収めるか</h2>
+{steps(
+ '長さ(秒)から、30MB に入るビットレート(1秒あたりのデータの量)を計算します。余裕を見て、30MB の 95% を目標にします。',
+ 'そのビットレートで、VP9 の 2 パス(1回目で中身を調べ、2回目で書き出す)で書き出します。きれいさに差が出ないほど多い時は、ちょうどよい量に抑えます(ファイルが小さくなります)。',
+ 'もし画質が落ちすぎる量しか使えない時や、書き出したものが 30MB を超えた時は、<b>大きさ(解像度)→ fps</b> の順に下げて作り直します。',
+ '下げた内容は、結果のカードに「⚠ 大きさを 832×480 → 624×360 に下げました」のように出ます。',
+)}
+<p>下げる順番は「そのまま → 大きさを 75% → 大きさ 75%・24fps → 大きさ 75%・16fps → 大きさ 50%・16fps」です。</p>
+
+<h2>長さと大きさの目安</h2>
+<table class="tbl">
+<tr><th>長さ</th><th>832×480・32fps のファイルの大きさ</th><th>下がるか</th></tr>
+<tr><td>2〜5秒</td><td>約1〜5MB</td><td>下がりません</td></tr>
+<tr><td>8〜20秒</td><td>約3〜15MB</td><td>ふつうは下がりません</td></tr>
+</table>
+<ul>
+  <li>このノートブックで作れる長さ(20秒まで)なら、ふつうは 30MB を大きく下回ります。動きがとてもこまかい時だけ、下がることがあります。</li>
+  <li>透明な部分の情報(アルファ)も、ファイルの中に一緒に入ります。</li>
+</ul>
+
+<h2 id="gpu">GPU ごとにできること</h2>
+<table class="tbl">
+<tr><th>GPU(メモリ)</th><th>動画の設定</th><th>大きさ・長さ</th><th>1本(5秒)の目安</th></tr>
+<tr><td>80GB の GPU(A100 80GB・H100 など)</td><td>最高画質(bf16)</td><td>832×480 / 480×832 / 624×624、1回 5秒まで</td><td>約2分</td></tr>
+<tr><td>A100(40GB)</td><td>標準(fp8)</td><td>同じ</td><td>約2〜3分</td></tr>
+<tr><td>L4(24GB)</td><td>試験的(fp8・入れ替えながら動かす)</td><td>同じ</td><td>約5〜10分</td></tr>
+<tr><td>T4(16GB)</td><td>動画は作れません</td><td>—</td><td>—</td></tr>
+</table>
+<ul>
+  <li><b>bf16</b> と <b>fp8</b> は、モデルの数字をしまう細かさです。fp8 はメモリを半分にできるかわりに、ごくわずかに細部が変わることがあります(見た目の差はほとんどありません)。</li>
+  <li>L4 では、文字を読む部品(T5)と本体を、GPU とメモリの間で入れ替えながら動かすので、時間がかかります。</li>
+  <li>時間には、ループの形にする・コマを補う・書き出す時間も入っています。1回目は、ほかにモデルの準備が約10〜15分かかります。</li>
+</ul>
+
+<h2>なめらかにする(RIFE)と画質</h2>
+<ul>
+  <li>Wan が作る動画は 16fps です。[[ui:なめらかにする]] をオンにすると、RIFE でコマの間を補って 32fps にします。</li>
+  <li>炎・煙・ゆっくりした動きは、とてもなめらかになります。速く飛び散る小さな粒は、まれに二重に見えることがあります。</li>
+  <li>コマが 2 倍になるので、同じ長さでもファイルは少し大きくなります(それでも 30MB には十分収まります)。</li>
+</ul>
+''')
+
+M(id='trouble', nav='困った時', title='困った時(よくある質問)',
+lead='うまくいかない時に、まず見てほしいところです。解決しない時は「📋 診断情報を出す」の内容を作者に送ってください。',
+kw='困った エラー 止まる 動かない メモリ 足りない 再起動 透明 ならない 翻訳 ダウンロード できない ドライブ 許可 GPU 使えない',
+related=['r-common', 'start', 'g-stop'],
+body=f'''
+<h2>準備・GPU</h2>
+{items([
+ ('「GPU がつながっていません」と出る', 'メニューの [[ui:ランタイム]] → [[ui:ランタイムのタイプを変更]] で、A100・L4・T4 のどれかを選んで保存し、セルを押し直します。'),
+ ('「この GPU では、動画を作るにはメモリが足りません」', 'T4 では動画は作れません。A100(おすすめ)か L4 を選んでください。静止画は T4 でも作れます。'),
+ ('A100 が選べない・つながらない', 'Colab が混んでいると、別の GPU になることがあります。少し時間をおいてから、もう一度選んでください。'),
+ ('「GPU のメモリが前の作業で使われたまま」と出る', '静止画のあとに動画のセルを押した時などに出ます。メニューの [[ui:ランタイム]] → [[ui:セッションを再起動する]] を押してから、動画のセルを押し直します。'),
+ ('準備の途中で止まった・通信が切れた', '少し待ってから、同じセルをもう一度押します。ダウンロードが終わっていた分は、使い回します。'),
+ ('「Colab のディスクがいっぱい」と出る', 'メニューの [[ui:ランタイム]] → [[ui:ランタイムを接続解除して削除]] をしてから、もう一度始めます。'),
+])}
+
+<h2>作る時</h2>
+{items([
+ ('「GPU のメモリが足りなくなりました」', '枚数・本数を減らす、大きさを小さくする、動画の長さを短くする。それでもだめなら [[ui:セッションを再起動する]] → セルを押し直す。'),
+ ('背景が透明にならない・背景ができてしまう', 'プロンプトから、背景になる言葉(夜空・部屋・景色など)を消します。静止画は [[ui:作り方]] を「ふつうに作って背景を切り抜く」にすると、はっきりした物・キャラは透明にしやすくなります。'),
+ ('思ったものと違う', '結果のカードの「英語:」を見て、意味がずれていたら [[ui:英語で直接書く]] に直した英語を書きます。主役を1つにして、短く書くのも効果があります。'),
+ ('「翻訳がうまくいきませんでした」', '言い方を変えるか、[[ui:英語で直接書く]] を使ってください。'),
+ ('動画の動きがカクカクする', '[[ui:なめらかにする]] をオンにします。'),
+ ('動画の粒が二重に見える', '[[ui:なめらかにする]] をオフにします(16fps のままになります)。'),
+ ('ループのつなぎ目でぴくっとする', '[[ui:ループ]] を「なめらかにつなぐ」か「行って戻る(往復)」にします。'),
+])}
+
+<h2>保存・ダウンロード</h2>
+{items([
+ ('[[ui:⬇ ダウンロード]] を押しても何も起きない', 'ブラウザがダウンロードをブロックしていることがあります。アドレスバーの右のアイコンから許可してください。ドライブの <b>CastFrost素材</b> からも取り出せます。'),
+ ('ドライブに保存されていない', 'ドライブへのアクセスを許可していないと保存されません。セルを押し直して、許可の画面で [[ui:許可]] します。[[ui:できたものをドライブにも保存する]] がオンかも確かめてください。'),
+ ('ドライブがいっぱいになった', 'マイドライブの <b>CastFrost_models</b> を消すと、モデルの分(約12GB)があきます(次からは毎回ダウンロードになります)。静止画の [[ui:モデルをドライブにしまう]] をオフにすると、しまわなくなります。'),
+])}
+
+<h2>Cast Frost に入れた時</h2>
+{items([
+ ('動画の背景が黒くなる', 'Safari では透明な WebM が黒く見えることがあります。Chrome・OBS・補助exe で確かめてください。'),
+ ('「30MB を超えています」と出る', 'このノートブックの WebM は 30MB 以内にしてあります。ほかのソフトで書き出し直したものは、超えることがあります。'),
+])}
+
+<h2>作者に知らせる時</h2>
+{steps(
+ 'セルの下の [[ui:くわしい記録(困った時に開く)]] を開きます。',
+ '[[ui:📋 診断情報を出す]] を押し、出た文と、記録の赤い部分をコピーします。',
+ 'どのセルで、何をした時に起きたかと一緒に送ってください。',
+)}
+''')
+
+M(id='glossary', nav='用語集', title='用語集',
+lead='このサイトとノートブックに出てくる言葉の意味です。',
+kw='用語 意味 Colab GPU ユニット セル プロンプト シード LayerDiffuse Wan-Alpha RIFE WebM VP9 アルファ fps',
+body=items([
+ ('Google Colab(Colab)', 'ブラウザの中で Python を動かせる、Google のサービス。GPU を借りて使えます。'),
+ ('Colab Pro', 'Colab の有料の契約。A100・L4 などの GPU を、コンピューティング ユニットの分だけ使えます。'),
+ ('コンピューティング ユニット', 'Colab で GPU を使った量。GPU の種類によって、1時間に減る量が違います。'),
+ ('GPU(A100・L4・T4)', '画像や動画を作る計算をする部品。A100 がいちばん速く、メモリも多いです。'),
+ ('ランタイム', 'Colab が貸してくれている、1台ぶんのコンピューター。止めると中のファイル(ドライブ以外)は消えます。'),
+ ('ノートブック', 'Colab で開くファイル(.ipynb)。このノートブックには、静止画・動画・GPU を止める の3つのセルがあります。'),
+ ('セル', 'ノートブックの1つの区切り。左の ▶ を押すと動きます。'),
+ ('プロンプト', '作りたいものを書いた文。'),
+ ('シード', '絵や動きの元になる数字。同じ設定・同じシードなら、同じものができます。'),
+ ('モデル', '絵や動画を作る AI の本体(学習した結果のファイル)。'),
+ ('SDXL', '画像を作るモデル(Stable Diffusion XL)。静止画で使います。'),
+ ('LayerDiffuse', 'SDXL で、最初から透明な部分を持った画像を作るしくみ。'),
+ ('BiRefNet', '画像から、物やキャラの部分だけを切り抜くモデル。静止画の「背景を切り抜く」で使います。'),
+ ('Wan / Wan-Alpha', 'Wan は動画を作るモデル。Wan-Alpha は、それをもとに、最初から透明な部分を持った動画を作れるようにしたもの。'),
+ ('LightX2V', 'Wan を、少ないステップ(4回)で作れるようにする部品。'),
+ ('RIFE', 'コマとコマの間に新しいコマを作って、動画をなめらかにするモデル。'),
+ ('Qwen3', '日本語のプロンプトを英語に直すのに使う言葉のモデル。'),
+ ('ステップ数', '絵や動画を作る時に、少しずつ仕上げていく回数。'),
+ ('CFG', 'プロンプトにどれだけ従うかの強さ。'),
+ ('bf16 / fp8', 'モデルの数字をしまう細かさ。fp8 は bf16 の半分のメモリですみます。'),
+ ('PNG', '透明な部分を持てる画像の形式。'),
+ ('WebM(VP9・yuva420p)', '透明な部分を持てる動画の形式。Chrome・OBS のブラウザソース・補助exe で透けて映ります。'),
+ ('アルファ(透明度)', '1つ1つの点が、どれだけ透けているかの情報。'),
+ ('fps', '1秒あたりのコマ数。大きいほどなめらか。'),
+ ('ビットレート', '動画の1秒あたりのデータの量。大きいほどきれいで、ファイルも大きくなります。'),
+ ('ループ', 'くり返し再生しても、つなぎ目がわからないようにすること。'),
+ ('ライセンス', 'モデルやプログラムを使ってよい条件。'),
+]))
+
+M(id='licenses', nav='使っているモデルとライセンス', title='使っているモデルとライセンス',
+lead='このノートブックで使うモデル・部品は、すべて商用で使えるライセンスのものです(配信の収益化にも使えます)。',
+kw='ライセンス 商用 収益化 モデル 一覧 Apache MIT OpenRAIL SDXL Animagine RealVisXL LayerDiffuse Wan Wan-Alpha LightX2V RIFE Qwen BiRefNet',
+related=['glossary'],
+body=f'''
+<h2>まとめ</h2>
+<ul>
+  <li>商用で使えないモデル・部品(研究専用・非商用など)は、入れていません。</li>
+  <li><b>Apache-2.0・MIT</b>:商用で使えます。ライセンスの文と著作権の表示を残す決まりがあります(このページで表示しています)。</li>
+  <li><b>CreativeML Open RAIL++-M / Open RAIL-M</b>:商用で使えます。ただし、<b>使い方の決まり</b>(法律に反すること・人を傷つけること・なりすまし・差別などに使わない)があり、作ったものもこの決まりの中で使います。作ったものの権利をモデルの作者が主張することはありません。</li>
+  <li>作ったものを使う時は、実在の人・ほかの作品のキャラクター・ロゴなど、<b>人の権利を侵さない</b>ように気をつけてください(モデルのライセンスとは別の話です)。</li>
+</ul>
+
+<h2>静止画</h2>
+<table class="tbl">
+<tr><th>名前(作者)</th><th>何に使うか</th><th>ライセンス</th></tr>
+<tr><td><a href="https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0" target="_blank" rel="noopener">Stable Diffusion XL 1.0 base</a>(Stability AI)</td><td>静止画のモデル(ふつう)</td><td>CreativeML Open RAIL++-M</td></tr>
+<tr><td><a href="https://huggingface.co/cagliostrolab/animagine-xl-4.0" target="_blank" rel="noopener">Animagine XL 4.0</a>(Cagliostro Research Lab)</td><td>静止画のモデル(アニメ調)</td><td>CreativeML Open RAIL++-M</td></tr>
+<tr><td><a href="https://huggingface.co/SG161222/RealVisXL_V5.0" target="_blank" rel="noopener">RealVisXL V5.0</a>(SG161222)</td><td>静止画のモデル(実写調)</td><td>CreativeML Open RAIL++-M</td></tr>
+<tr><td><a href="https://huggingface.co/LayerDiffusion/layerdiffusion-v1" target="_blank" rel="noopener">LayerDiffusion v1</a>(Lvmin Zhang・Maneesh Agrawala)</td><td>透明な部分を取り出す部品(デコーダー)</td><td>CreativeML Open RAIL-M</td></tr>
+<tr><td><a href="https://github.com/rootonchair/diffuser_layerdiffuse" target="_blank" rel="noopener">diffuser_layerdiffuse</a>(rootonchair)</td><td>LayerDiffuse を diffusers で動かすプログラムと、変換した LoRA</td><td>MIT(LoRA の元の重みは LayerDiffusion v1 と同じ Open RAIL-M)</td></tr>
+<tr><td><a href="https://huggingface.co/madebyollin/sdxl-vae-fp16-fix" target="_blank" rel="noopener">SDXL-VAE-FP16-Fix</a>(madebyollin)</td><td>絵を仕上げる部品(VAE)</td><td>MIT</td></tr>
+<tr><td><a href="https://huggingface.co/ZhengPeng7/BiRefNet" target="_blank" rel="noopener">BiRefNet</a>(Peng Zheng ほか)</td><td>背景の切り抜き(使った時だけ)</td><td>MIT</td></tr>
+</table>
+
+<h2>動画</h2>
+<table class="tbl">
+<tr><th>名前(作者)</th><th>何に使うか</th><th>ライセンス</th></tr>
+<tr><td><a href="https://huggingface.co/Wan-AI/Wan2.1-T2V-14B" target="_blank" rel="noopener">Wan2.1-T2V-14B</a>(Wan-AI / Alibaba)</td><td>動画のモデルの元・文字を読む部品(T5)・VAE</td><td>Apache-2.0</td></tr>
+<tr><td><a href="https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged" target="_blank" rel="noopener">Wan 2.1 ComfyUI repackaged</a>(Comfy-Org)</td><td>Wan2.1-T2V-14B の本体を1つのファイルにまとめたもの(中身は同じ)</td><td>Apache-2.0</td></tr>
+<tr><td><a href="https://huggingface.co/htdong/Wan-Alpha-v2.0" target="_blank" rel="noopener">Wan-Alpha v2.0</a>・<a href="https://huggingface.co/htdong/Wan-Alpha-VAE" target="_blank" rel="noopener">Wan-Alpha VAE</a>(Haotian Dong ほか / WeChat Vision)</td><td>透明な部分を持った動画にする部品(DoRA)と、色・透明度を取り出す VAE</td><td>Apache-2.0</td></tr>
+<tr><td><a href="https://github.com/WeChatCV/Wan-Alpha" target="_blank" rel="noopener">Wan-Alpha のプログラム</a>(WeChat Vision)</td><td>動画を作るプログラム(一部を置き換えて使用)</td><td>MIT</td></tr>
+<tr><td><a href="https://huggingface.co/lightx2v/Wan2.1-T2V-14B-StepDistill-CfgDistill-Lightx2v" target="_blank" rel="noopener">LightX2V T2V 14B StepDistill LoRA</a>(LightX2V)</td><td>4ステップで速く作る部品</td><td>Apache-2.0</td></tr>
+<tr><td><a href="https://github.com/hzwer/Practical-RIFE" target="_blank" rel="noopener">RIFE v4.25</a>(hzwer)・<a href="https://github.com/HolyWu/vs-rife" target="_blank" rel="noopener">vs-rife</a>(HolyWu)</td><td>コマを補ってなめらかにする(重みは vs-rife の配布物を使用)</td><td>MIT</td></tr>
+</table>
+
+<h2>共通</h2>
+<table class="tbl">
+<tr><th>名前(作者)</th><th>何に使うか</th><th>ライセンス</th></tr>
+<tr><td><a href="https://huggingface.co/Qwen/Qwen3-1.7B" target="_blank" rel="noopener">Qwen3-1.7B</a>(Qwen / Alibaba)</td><td>日本語のプロンプトを英語に直す</td><td>Apache-2.0</td></tr>
+<tr><td>PyTorch・diffusers・transformers・accelerate・peft・safetensors・huggingface_hub</td><td>モデルを動かすためのプログラム</td><td>BSD-3-Clause(PyTorch)/ Apache-2.0(そのほか)</td></tr>
+<tr><td>ipywidgets・IPython</td><td>セルの中の画面</td><td>BSD-3-Clause</td></tr>
+<tr><td>FFmpeg・libvpx</td><td>WebM(VP9)の書き出し(Colab に入っているものを使用)</td><td>LGPL-2.1 以降 / BSD-3-Clause</td></tr>
+<tr><td>timm・kornia</td><td>BiRefNet を動かす部品(使った時だけ)</td><td>Apache-2.0</td></tr>
+</table>
+<p>このノートブックと使い方サイトは compact が作りました(made by compact)。ノートブックのプログラムの中の、ほかの作者のプログラムをもとにした部分には、元の作者とライセンスを書いています。</p>
+<p>ライセンスの内容は、それぞれのリンク先の最新のものが正しい内容です(このページの確認日:2026年11月19日)。</p>
+''')
+
+M(id='changelog', nav='更新履歴', title='更新履歴',
+lead='ノートブックと使い方サイトの変更の記録です。',
+kw='更新 履歴 バージョン 変更',
+body=f'''
+<h2>v0.1.0(2026年11月19日)</h2>
+<ul>
+  <li>はじめての版。</li>
+  <li>[[cell:🖼 静止画を作る]]:SDXL 1.0 + LayerDiffuse で、背景が透明な PNG を作る。枚数・シード・大きさ(5種類)。高度な設定で、アニメ調(Animagine XL 4.0)・実写調(RealVisXL V5.0)・背景を切り抜く(BiRefNet)。</li>
+  <li>[[cell:🎬 動画を作る]]:Wan-Alpha v2.0 + LightX2V で、背景が透明な WebM を作る。長さ(2〜20秒)・ループ(なめらかにつなぐ・往復)・RIFE でなめらかに(32fps)・30MB 以内に自動で収める。GPU に合わせて、最高画質(bf16)・標準(fp8)・試験的(L4)を自動で選ぶ。</li>
+  <li>日本語のプロンプトを、Qwen3-1.7B で英語に直して使う。</li>
+  <li>結果のカード(見本の背景 チェック・黒・白・緑、⬇ ダウンロード、🔁 作り直し)。マイドライブ / CastFrost素材 に保存。</li>
+  <li>[[cell:🛑 GPU を止める]] のセル。</li>
+  <li>使い方サイトを公開(Cast Frost Web ヘルプと同じ作り)。</li>
+</ul>
+''')

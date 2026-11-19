@@ -1,0 +1,358 @@
+# Cast Frost 素材メーカー:Wan-Alpha(透明な部分を持った動画を作るモデル)を、GPU 1枚で動かすための部品
+# - Wan-Alpha(WeChatCV/Wan-Alpha, MIT License)の推論コードを読み込み、少しだけ差し替えて使う
+#   ・flash-attn がなくても動くよう、注意(attention)を PyTorch の SDPA に置き換える
+#   ・14B の本体を 1 層ずつ読みながら、Wan-Alpha の DoRA と LightX2V の LoRA を足し込む(CPU のメモリを使いすぎない)
+#   ・GPU のメモリが少ない時は、重みを fp8 でしまって、計算の時だけ bf16 に戻す
+import gc, math, os, random, sys, logging
+from contextlib import contextmanager
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+WAN_CFG = dict(model_type='t2v', patch_size=(1, 2, 2), text_len=512, in_dim=16, dim=5120, ffn_dim=13824,
+               freq_dim=256, text_dim=4096, out_dim=16, num_heads=40, num_layers=40, window_size=(-1, -1),
+               qk_norm=True, cross_attn_norm=True, eps=1e-6)
+FPS = 16                     # Wan が作る動画の fps
+MAX_FRAMES = 81              # 一度に作れるコマ数(約5秒)。4n+1 にする決まりがある
+SHIFT = 5.0
+ALPHA_SHIFT_MEAN = 0.05      # Wan-Alpha v2.0 の決まった値
+STRIP_PREFIXES = ('model.diffusion_model.', 'diffusion_model.', 'model.')
+
+
+def frames_for_seconds(sec):
+    """秒数から、4n+1 のコマ数を決める(最大 81)"""
+    n = int(math.ceil(sec * FPS))
+    n = int(math.ceil((n - 1) / 4.0)) * 4 + 1
+    return max(5, min(MAX_FRAMES, n))
+
+
+# ---------------------------------------------------------------- 注意(attention)の置き換え
+def sdpa_attention(q, k, v, q_lens=None, k_lens=None, dropout_p=0., softmax_scale=None, q_scale=None,
+                   causal=False, window_size=(-1, -1), deterministic=False, dtype=torch.bfloat16, version=None):
+    """flash_attention と同じ形で受けて、PyTorch の scaled_dot_product_attention で計算する"""
+    out_dtype = q.dtype
+    half = (torch.float16, torch.bfloat16)
+    cd = q.dtype if q.dtype in half else dtype
+    if q_scale is not None:
+        q = q * q_scale
+    q = q.transpose(1, 2).to(cd)
+    k = k.transpose(1, 2).to(cd)
+    v = v.transpose(1, 2).to(cd)
+    mask = None
+    lk = k.size(2)
+    if k_lens is not None and int(k_lens.min()) < lk:
+        ar = torch.arange(lk, device=k.device)[None, :]
+        mask = (ar < k_lens.to(k.device)[:, None])[:, None, None, :]
+    out = F.scaled_dot_product_attention(q, k, v, attn_mask=mask, dropout_p=0.0, is_causal=causal,
+                                         scale=softmax_scale)
+    return out.transpose(1, 2).contiguous().to(out_dtype)
+
+
+def import_wan(repo_dir):
+    """Wan-Alpha のコードを読み込み、注意の計算を差し替える"""
+    if repo_dir not in sys.path:
+        sys.path.insert(0, repo_dir)
+    import wan.modules.attention as A
+    import wan.modules.model_dora_lightx2v as M
+    A.flash_attention = sdpa_attention
+    M.flash_attention = sdpa_attention
+    return M
+
+
+# ---------------------------------------------------------------- fp8 でしまう Linear
+class FP8Linear(nn.Module):
+    """重みを float8(e4m3)でしまい、使う時だけ元の精度に戻す Linear"""
+
+    def __init__(self, in_features, out_features, bias=True):
+        super().__init__()
+        self.in_features, self.out_features = in_features, out_features
+        self.register_buffer('weight', torch.empty(out_features, in_features, dtype=torch.float8_e4m3fn))
+        self.register_buffer('scale', torch.ones((), dtype=torch.float32))
+        if bias:
+            self.register_buffer('bias', torch.zeros(out_features, dtype=torch.float32))
+        else:
+            self.bias = None
+
+    @torch.no_grad()
+    def set_weight(self, w):
+        w = w.float()
+        s = (w.abs().max() / 448.0).clamp(min=1e-12)
+        self.weight = (w / s).to(torch.float8_e4m3fn)
+        self.scale = s.to(torch.float32)
+
+    def forward(self, x):
+        w = self.weight.to(torch.bfloat16) * self.scale.to(torch.bfloat16)
+        b = None if self.bias is None else self.bias.to(torch.bfloat16)
+        if torch.is_autocast_enabled(x.device.type):
+            return F.linear(x, w, b)
+        return F.linear(x.to(torch.bfloat16), w, b).to(x.dtype)
+
+
+def _swap_linears_to_fp8(model):
+    for blk in model.blocks:
+        for name, mod in list(blk.named_modules()):
+            for cname, child in list(mod.named_children()):
+                if isinstance(child, nn.Linear):
+                    with torch.device('meta'):
+                        new = FP8Linear(child.in_features, child.out_features, child.bias is not None)
+                    setattr(mod, cname, new)
+
+
+# ---------------------------------------------------------------- DoRA / LoRA の読み込み(Wan-Alpha と同じ読み方)
+def _strip(k):
+    for p in STRIP_PREFIXES:
+        if k.startswith(p):
+            return k[len(p):]
+    return k
+
+
+def dora_map(sd):
+    """Wan-Alpha の load_dora と同じ名前の解き方"""
+    out = {}
+    for key in sd:
+        if '.lora_B.' not in key:
+            continue
+        ks = key.split('.')
+        i = ks.index('lora_B')
+        if len(ks) > i + 2:
+            ks.pop(i + 1)
+        ks.pop(i)
+        if ks[0] == 'diffusion_model':
+            ks.pop(0)
+        target = '.'.join(ks)
+        mag = key.replace('.lora_B.', '.lora_magnitude_vector.').replace('lora_B', 'lora_magnitude_vector')
+        out[target] = (key, key.replace('.lora_B.', '.lora_A.'), mag)
+    return out
+
+
+def lora_map(sd):
+    """Wan-Alpha の WanLoraWrapper と同じ名前の解き方(lora_A/B・lora_down/up・diff)"""
+    pairs, diffs = {}, {}
+    for prefix in ('', 'diffusion_model.'):
+        for key in sd:
+            if not key.startswith(prefix):
+                continue
+            for a, b in (('lora_A.weight', 'lora_B.weight'), ('lora_down.weight', 'lora_up.weight')):
+                if key.endswith(a):
+                    base = key[len(prefix):].replace(a, 'weight')
+                    pk = key.replace(a, b)
+                    if pk in sd:
+                        pairs[base] = (key, pk)
+            for suf, tgt in (('diff', 'weight'), ('diff_b', 'bias'), ('diff_m', 'modulation')):
+                if key.endswith(suf):
+                    diffs[key[len(prefix):].replace(suf, tgt)] = key
+    return pairs, diffs
+
+
+def _load_sd(path):
+    from safetensors.torch import load_file
+    if path.endswith('.safetensors'):
+        return load_file(path, device='cpu')
+    return torch.load(path, map_location='cpu', weights_only=False)
+
+
+class BaseKeyError(RuntimeError):
+    pass
+
+
+@torch.no_grad()
+def build_dit(M, base_path, dora_path=None, lora_path=None, mode='fp8', device='cuda', cfg=None, log=print,
+              progress=None):
+    """14B の本体を 1 つずつ読み、DoRA と LoRA を足してから GPU に置く。
+    mode: 'fp8'(重みを fp8 でしまう)/ 'bf16'"""
+    from safetensors import safe_open
+    cfg = dict(cfg or WAN_CFG)
+    device = torch.device(device)
+    with torch.device('meta'):
+        model = M.WanModel_dora_lightx2v(**cfg)
+    names = list(model.state_dict().keys())
+    if mode == 'fp8':
+        _swap_linears_to_fp8(model)
+    dsd = _load_sd(dora_path) if dora_path else {}
+    dmap = dora_map(dsd)
+    lsd = _load_sd(lora_path) if lora_path else {}
+    lpairs, ldiffs = lora_map(lsd)
+    n_dora = n_lora = 0
+    lora_alpha_warn = any(k.endswith('.alpha') for k in lsd)
+
+    paths = base_path if isinstance(base_path, (list, tuple)) else [base_path]
+    handles = [safe_open(p, framework='pt', device='cpu') for p in paths]
+    base_keys = {}
+    for h in handles:
+        for k in h.keys():
+            base_keys[_strip(k)] = (h, k)
+    missing = [n for n in names if n not in base_keys]
+    if missing:
+        raise BaseKeyError(f'本体のファイルに足りない重みがあります({len(missing)}個):{missing[:3]}')
+
+    for i, name in enumerate(names):
+        h, k = base_keys[name]
+        w = h.get_tensor(k).to(device=device, dtype=torch.float32)
+        if name in dmap:
+            kb, ka, km = dmap[name]
+            B = dsd[kb].to(device, torch.float32)
+            A = dsd[ka].to(device, torch.float32)
+            mag = dsd[km].to(device, torch.float32)
+            if B.dim() == 4:
+                delta = torch.mm(B.squeeze(3).squeeze(2), A.squeeze(3).squeeze(2)).unsqueeze(2).unsqueeze(3)
+            else:
+                delta = torch.mm(B, A)
+            wd = w + delta
+            if wd.dim() == 4:
+                nrm = torch.linalg.norm(wd, dim=tuple(range(1, wd.dim())), keepdim=True)
+            else:
+                nrm = torch.linalg.norm(wd, dim=1, keepdim=True)
+            nrm = nrm.clamp(min=1e-8)
+            w = (mag.view_as(nrm) / nrm) * wd
+            n_dora += 1
+        if name in lpairs:
+            ka, kb = lpairs[name]
+            A = lsd[ka].to(device, torch.float32)
+            B = lsd[kb].to(device, torch.float32)
+            if w.shape == (B.shape[0], A.shape[1]):
+                w = w + torch.matmul(B, A)
+                n_lora += 1
+        elif name in ldiffs:
+            d = lsd[ldiffs[name]].to(device, torch.float32)
+            if d.shape == w.shape:
+                w = w + d
+                n_lora += 1
+        mod_name, attr = name.rsplit('.', 1)
+        mod = model.get_submodule(mod_name)
+        if isinstance(mod, FP8Linear):
+            if attr == 'weight':
+                mod.set_weight(w)
+            else:
+                mod.bias = w.to(torch.float32)
+        else:
+            big_linear = isinstance(mod, nn.Linear) and attr == 'weight' and mod_name.startswith('blocks.')
+            dt = torch.bfloat16 if big_linear else torch.float32
+            mod._parameters[attr] = nn.Parameter(w.to(dt), requires_grad=False)
+        del w
+        if progress and (i % 40 == 0 or i == len(names) - 1):
+            progress(i + 1, len(names))
+    del handles, base_keys
+    if dmap and n_dora == 0:
+        raise RuntimeError('Wan-Alpha の DoRA が 1 つも当てはまりませんでした(ファイルの形が想定と違います)')
+    if lpairs and n_lora == 0:
+        raise RuntimeError('LightX2V の LoRA が 1 つも当てはまりませんでした(ファイルの形が想定と違います)')
+    if lora_alpha_warn:
+        log('(参考)LightX2V の LoRA に alpha の値が入っていましたが、Wan-Alpha の作者のやり方に合わせて使っていません')
+    d = cfg['dim'] // cfg['num_heads']
+    model.freqs = torch.cat([M.rope_params(1024, d - 4 * (d // 6)), M.rope_params(1024, 2 * (d // 6)),
+                             M.rope_params(1024, 2 * (d // 6))], dim=1)
+    for n_, t in list(model.named_parameters()) + list(model.named_buffers()):
+        if t.is_meta:
+            raise RuntimeError(f'読み込めていない重みがあります:{n_}')
+    model.eval().requires_grad_(False)
+    log(f'本体を読み込みました(DoRA {n_dora}か所・LightX2V {n_lora}か所・{mode})')
+    return model
+
+
+# ---------------------------------------------------------------- 生成
+def resample_mask(mask, t, h, w):
+    """Wan-Alpha v2.0 のガウスマスク(21×H×W)を、作る長さと大きさに合わせる"""
+    m = mask[None, None].float()  # 1,1,T,H,W
+    m = F.interpolate(m, size=(t, h, w), mode='trilinear', align_corners=False)
+    return m[0, 0]
+
+
+class AlphaWan:
+    """Wan-Alpha で、透明な部分を持った動画のコマを作る"""
+
+    def __init__(self, M, dit, t5, vae, gauss_mask, device='cuda', t5_on_gpu=True, offload_for_decode=False,
+                 log=print):
+        self.M, self.dit, self.t5, self.vae = M, dit, t5, vae
+        self.gauss_mask = gauss_mask
+        self.device = torch.device(device)
+        self.t5_on_gpu = t5_on_gpu
+        self.offload_for_decode = offload_for_decode
+        self.log = log
+        self._ctx_cache = {}
+
+    def _dit_to(self, dev):
+        self.dit.to(dev)
+        if dev == 'cpu' or (isinstance(dev, torch.device) and dev.type == 'cpu'):
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    def _free_gb(self):
+        return torch.cuda.mem_get_info()[0] / 1024 ** 3
+
+    @torch.no_grad()
+    def encode(self, prompt):
+        if prompt in self._ctx_cache:
+            return self._ctx_cache[prompt]
+        if self.t5_on_gpu:
+            ctx = self.t5([prompt], self.device)
+        else:
+            # 文字を読む部品(T5・約11GB)は、使う時だけ GPU に載せる。入らない時は本体をいったん CPU に逃がす
+            swapped = self._free_gb() < 13.0
+            if swapped:
+                self._dit_to('cpu')
+            self.t5.model.to(self.device)
+            try:
+                ctx = self.t5([prompt], self.device)
+                ctx = [c.clone() for c in ctx]
+            finally:
+                self.t5.model.to('cpu')
+                gc.collect()
+                torch.cuda.empty_cache()
+                if swapped:
+                    self._dit_to(self.device)
+        ctx = [c.to(self.device) for c in ctx]
+        if len(self._ctx_cache) > 16:
+            self._ctx_cache.clear()
+        self._ctx_cache[prompt] = ctx
+        return ctx
+
+    @torch.no_grad()
+    def generate(self, prompt, width, height, frame_num, seed, steps=4, progress=None):
+        from wan.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+        vae_stride, patch = (4, 8, 8), (1, 2, 2)
+        z_dim = self.vae.model_fgr.z_dim
+        shape = (z_dim, (frame_num - 1) // vae_stride[0] + 1, height // vae_stride[1], width // vae_stride[2])
+        seq_len = math.ceil((shape[2] * shape[3]) / (patch[1] * patch[2]) * shape[1])
+        seed = seed if seed >= 0 else random.randint(0, 2 ** 31 - 1)
+        context = self.encode(prompt)
+        g = torch.Generator(device=self.device)
+        g.manual_seed(seed)
+        noise = torch.randn(*shape, dtype=torch.float32, device=self.device, generator=g)
+        # Wan-Alpha v2.0:透明にしたい外側のノイズを少しずらして、透明さを安定させる
+        gm = resample_mask(self.gauss_mask.to(self.device), shape[1], shape[2], shape[3])
+        noise = noise + (1 - gm) * torch.tensor(ALPHA_SHIFT_MEAN, dtype=torch.bfloat16, device=self.device)
+        sched = FlowUniPCMultistepScheduler(num_train_timesteps=1000, shift=1, use_dynamic_shifting=False)
+        sched.set_timesteps(steps, device=self.device, shift=SHIFT)
+        latents = [noise]
+        with torch.autocast('cuda', dtype=torch.bfloat16):
+            for i, t in enumerate(sched.timesteps):
+                ts = torch.stack([t])
+                pred = self.dit(latents, t=ts, context=context, seq_len=seq_len)[0]
+                x0 = sched.step(pred.unsqueeze(0), t, latents[0].unsqueeze(0), return_dict=False, generator=g)[0]
+                latents = [x0.squeeze(0)]
+                if progress:
+                    progress(i + 1, steps)
+        del noise, pred
+        torch.cuda.empty_cache()
+        off = self.offload_for_decode or self._free_gb() < 12.0   # 色と透明度を取り出す時に足りなければ、本体を逃がす
+        if off:
+            self._dit_to('cpu')
+        try:
+            fgr, pha = self.vae.decode(latents)
+        finally:
+            if off:
+                self._dit_to(self.device)
+        frames = to_rgba(fgr[0], pha[0])
+        del latents, fgr, pha
+        gc.collect()
+        torch.cuda.empty_cache()
+        return frames, seed
+
+
+def to_rgba(fgr, pha):
+    """VAE の出力(色:3×F×H×W、透明度:3×F×H×W、どちらも -1〜1)を、RGBA のコマに直す"""
+    import numpy as np
+    rgb = ((fgr.clamp(-1, 1) + 1) * 127.5).round().to(torch.uint8)   # 3,F,H,W
+    a = ((pha.clamp(-1, 1) + 1) * 127.5).mean(0, keepdim=True).round().to(torch.uint8)
+    x = torch.cat([rgb, a], 0).permute(1, 2, 3, 0).cpu().numpy()       # F,H,W,4
+    return [np.ascontiguousarray(f) for f in x]
