@@ -75,7 +75,7 @@ body=f'''
 <table class="tbl">
 <tr><th>GPU</th><th>静止画</th><th>動画</th><th>ユニット(1時間あたりの目安)</th></tr>
 <tr><td><b>A100</b></td><td>◎ 1枚 約10秒</td><td>◎ 5秒の動画 1本 約2〜3分(おすすめ)</td><td>約5.4</td></tr>
-<tr><td><b>L4</b></td><td>○ 1枚 約25秒</td><td>△ 1本 約5〜10分(試験的)</td><td>約1.7</td></tr>
+<tr><td><b>L4</b></td><td>○ 1枚 約25秒</td><td>△ 1本 約6〜12分(試験的)</td><td>約1.7</td></tr>
 <tr><td><b>T4</b></td><td>○ 1枚 約60秒</td><td>✕ 作れません</td><td>約1.2</td></tr>
 </table>
 <ul>

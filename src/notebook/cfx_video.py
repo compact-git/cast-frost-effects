@@ -32,11 +32,12 @@ def plan_gpu(g, ram_total):
     """GPU を見て、設定を決める"""
     v = g['total_gb']
     if v >= 70:
-        return dict(mode='bf16', t5_gpu=True, offload_decode=False, label='最高画質(bf16)', exp=False)
+        return dict(mode='bf16', t5_gpu=True, offload_decode=False, stream=False, label='最高画質(bf16)', exp=False)
     if v >= 35:
-        return dict(mode='fp8', t5_gpu=False, offload_decode=False, label='標準(fp8)', exp=False)
+        return dict(mode='fp8', t5_gpu=False, offload_decode=False, stream=False, label='標準(fp8)', exp=False)
     if v >= 20:
-        return dict(mode='fp8', t5_gpu=False, offload_decode=True, label='試験的(fp8・入れ替えながら動かす)', exp=True)
+        return dict(mode='fp8', t5_gpu=False, offload_decode=False, stream=True,
+                    label='試験的(fp8・本体を 1 層ずつ運びながら動かす)', exp=True)
     return None
 
 
@@ -70,13 +71,13 @@ class VideoMaker:
         dfiles = C.repo_files(WAN_DIT_REPO)
         dit_name = next((f for f in WAN_DIT_FILES if f in dfiles), None)
         if dit_name is None:
-            raise RuntimeError('本体(14B)のファイルが見つかりませんでした。作者に知らせてください。')
+            raise RuntimeError('本体(14B)のファイルが見つかりませんでした。少し時間をおいてから、もう一度押してください。')
         log('本体(14B・約29GB)をダウンロードしています。初回は 5〜10 分ほどかかります…')
         dit_path = C.fetch_file(WAN_DIT_REPO, dit_name, 'wan2.1-dit', log)
         afiles = C.repo_files(ALPHA_REPO)
         dora_name = next((f for f in afiles if f.endswith('.safetensors')), None)
         if dora_name is None:
-            raise RuntimeError('Wan-Alpha のファイルが見つかりませんでした。作者に知らせてください。')
+            raise RuntimeError('Wan-Alpha のファイルが見つかりませんでした(配布元が変わった可能性があります)。少し時間をおいてから、もう一度押してください。')
         dora_path = C.fetch_file(ALPHA_REPO, dora_name, 'wan-alpha-v2', log)
         mask_name = 'gauss_mask' if 'gauss_mask' in afiles else None
         mask_path = C.fetch_file(ALPHA_REPO, mask_name, 'wan-alpha-v2', log) if mask_name else os.path.join(repo, 'gauss_mask')
@@ -85,7 +86,7 @@ class VideoMaker:
         cands = [f for f in lfiles if f.startswith('loras/') and f.endswith('.safetensors')]
         cands.sort(key=lambda f: (0 if 'rank64' in f else 1, f))
         if not cands:
-            raise RuntimeError('LightX2V の LoRA が見つかりませんでした。作者に知らせてください。')
+            raise RuntimeError('LightX2V の LoRA が見つかりませんでした(配布元が変わった可能性があります)。少し時間をおいてから、もう一度押してください。')
         lora_path = C.fetch_file(LIGHTX2V_REPO, cands[0], 'lightx2v', log)
         C.download_url('https://github.com/HolyWu/vs-rife/releases/download/model/flownet_v4.25.pkl', RIFE_FILE, log)
 
@@ -101,7 +102,7 @@ class VideoMaker:
         prog = lambda d, t: self.ui.progress(d, t)
         try:
             dit = WW.build_dit(M, dit_path, dora_path, lora_path, mode=self.plan['mode'], device='cuda', log=log,
-                               progress=prog)
+                               progress=prog, stream=self.plan['stream'])
         except WW.BaseKeyError as e:
             # まとめたファイルの形が合わない時は、公式の分割ファイル(約57GB)を使う
             log(f'(参考){e}')
@@ -113,7 +114,7 @@ class VideoMaker:
             shards = [C.fetch_file(WAN_BASE_REPO, f, 'wan2.1-t2v-14b', log) for f in files
                       if f.startswith('diffusion_pytorch_model') and f.endswith('.safetensors')]
             dit = WW.build_dit(M, shards, dora_path, lora_path, mode=self.plan['mode'], device='cuda', log=log,
-                               progress=prog)
+                               progress=prog, stream=self.plan['stream'])
         mask = torch.load(mask_path, map_location='cpu', weights_only=False)
         mask = torch.as_tensor(mask).float()
         self.wan = WW.AlphaWan(M, dit, t5, vae, mask, device='cuda', t5_on_gpu=self.plan['t5_gpu'],
@@ -271,7 +272,7 @@ def _build_form(ui, maker, plan):
         nf, clips = gen_frames_for(length.value, loop.value, long_mode.value)
         per = {'bf16': 1.2, 'fp8': 1.5}.get(plan['mode'], 1.5) * (nf / 81.0) * (steps.value / 4.0)
         if plan['exp']:
-            per *= 3.0
+            per *= 4.0
         mins = per * clips * count.value + 0.3 * count.value
         est.value = (f'<small style="color:#4d6680">1回で作るコマ:{nf}(約{nf / WW.FPS:.1f}秒)×{clips}回'
                      f'・かかる時間の目安:約{max(1, round(mins))}分</small>')

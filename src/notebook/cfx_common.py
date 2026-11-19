@@ -3,7 +3,7 @@
 import os, sys, re, gc, io, json, time, base64, shutil, threading, subprocess, traceback, html, platform
 from datetime import datetime
 
-VERSION = '0.1.1'
+VERSION = '0.1.2'
 AUTHOR = 'made by compact'
 SITE_URL = 'https://rider.tokyo/apps/cast/effects/'
 APP_URL = 'https://cast.rider.tokyo/'
@@ -17,6 +17,7 @@ OUT_DIR = MYDRIVE + '/CastFrost素材'          # 作ったものだけを置く
 CACHE_DIR = MYDRIVE + '/CastFrost_models'      # モデルをしまう場所(作ったものとは分ける)
 MARK = '.cfx_complete'
 
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')   # GPU のメモリを細切れにしない
 os.environ.setdefault('DIFFUSERS_VERBOSITY', 'error')       # Flax のお知らせなど、関係ない表示を出さない
 os.environ.setdefault('TRANSFORMERS_VERBOSITY', 'error')
 import warnings as _w
@@ -417,7 +418,7 @@ def friendly_error(e):
                 'このセルを押し直してください。')
     if isinstance(e, RuntimeError) and re.search(r'[぀-ヿ]', str(e)):
         return str(e)
-    return 'うまくいきませんでした。下の「くわしい記録」を開いて、内容を作者に知らせてください。'
+    return f'うまくいきませんでした({type(e).__name__})。使い方サイトの「困った時」を見てください:{SITE_URL}trouble.html'
 
 
 def diag_text(extra=None):

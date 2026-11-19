@@ -157,9 +157,10 @@ class BaseKeyError(RuntimeError):
 
 @torch.no_grad()
 def build_dit(M, base_path, dora_path=None, lora_path=None, mode='fp8', device='cuda', cfg=None, log=print,
-              progress=None):
+              progress=None, stream=False):
     """14B の本体を 1 つずつ読み、DoRA と LoRA を足してから GPU に置く。
-    mode: 'fp8'(重みを fp8 でしまう)/ 'bf16'"""
+    mode: 'fp8'(重みを fp8 でしまう)/ 'bf16'
+    stream=True:層(blocks)の重みは CPU のメモリに置き、使う時だけ GPU に運ぶ(GPU のメモリが少ない時)"""
     from safetensors import safe_open
     cfg = dict(cfg or WAN_CFG)
     device = torch.device(device)
@@ -219,15 +220,22 @@ def build_dit(M, base_path, dora_path=None, lora_path=None, mode='fp8', device='
                 n_lora += 1
         mod_name, attr = name.rsplit('.', 1)
         mod = model.get_submodule(mod_name)
+        to_cpu = stream and mod_name.startswith('blocks.')
         if isinstance(mod, FP8Linear):
             if attr == 'weight':
                 mod.set_weight(w)
+                if to_cpu:
+                    mod.weight = _pin(mod.weight)
+                    mod.scale = _pin(mod.scale)
             else:
-                mod.bias = w.to(torch.float32)
+                mod.bias = _pin(w.to(torch.float32)) if to_cpu else w.to(torch.float32)
         else:
             big_linear = isinstance(mod, nn.Linear) and attr == 'weight' and mod_name.startswith('blocks.')
             dt = torch.bfloat16 if big_linear else torch.float32
-            mod._parameters[attr] = nn.Parameter(w.to(dt), requires_grad=False)
+            t = w.to(dt)
+            if to_cpu:
+                t = _pin(t)
+            mod._parameters[attr] = nn.Parameter(t, requires_grad=False)
         del w
         if progress and (i % 40 == 0 or i == len(names) - 1):
             progress(i + 1, len(names))
@@ -245,8 +253,61 @@ def build_dit(M, base_path, dora_path=None, lora_path=None, mode='fp8', device='
         if t.is_meta:
             raise RuntimeError(f'読み込めていない重みがあります:{n_}')
     model.eval().requires_grad_(False)
-    log(f'本体を読み込みました(DoRA {n_dora}か所・LightX2V {n_lora}か所・{mode})')
+    if stream:
+        enable_block_streaming(model, device)
+    log(f'本体を読み込みました(DoRA {n_dora}か所・LightX2V {n_lora}か所・{mode}' + ('・1層ずつ運ぶ' if stream else '') + ')')
     return model
+
+
+def _pin(t):
+    t = t.detach().to('cpu')
+    try:
+        return t.pin_memory()
+    except Exception:
+        return t
+
+
+def enable_block_streaming(model, device):
+    """各層(block)の重みを CPU に置いたままにし、その層を計算する時だけ GPU に運ぶ"""
+    device = torch.device(device)
+    model._cfx_stream = True
+    for blk in model.blocks:
+        st = []
+        for mod in blk.modules():
+            for n, p in mod._parameters.items():
+                if p is not None:
+                    st.append((mod, 'p', n, p.data))
+            for n, b in mod._buffers.items():
+                if b is not None:
+                    st.append((mod, 'b', n, b))
+
+        def pre(m, args, kwargs, st=st):
+            for mod, k, n, t in st:
+                g = t.to(device, non_blocking=True)
+                if k == 'p':
+                    mod._parameters[n].data = g
+                else:
+                    mod._buffers[n] = g
+
+        def post(m, args, kwargs, out, st=st):
+            for mod, k, n, t in st:
+                if k == 'p':
+                    mod._parameters[n].data = t
+                else:
+                    mod._buffers[n] = t
+
+        blk.register_forward_pre_hook(pre, with_kwargs=True)
+        blk.register_forward_hook(post, with_kwargs=True)
+
+
+def move_model(model, dev):
+    """本体を動かす。1層ずつ運ぶ設定の時は、層(blocks)以外だけを動かす"""
+    if getattr(model, '_cfx_stream', False):
+        for name, child in model.named_children():
+            if name != 'blocks':
+                child.to(dev)
+    else:
+        model.to(dev)
 
 
 # ---------------------------------------------------------------- 生成
@@ -271,7 +332,7 @@ class AlphaWan:
         self._ctx_cache = {}
 
     def _dit_to(self, dev):
-        self.dit.to(dev)
+        move_model(self.dit, dev)
         if dev == 'cpu' or (isinstance(dev, torch.device) and dev.type == 'cpu'):
             gc.collect()
             torch.cuda.empty_cache()
