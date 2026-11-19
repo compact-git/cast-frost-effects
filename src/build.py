@@ -75,7 +75,7 @@ def page_html(p, prev, nxt):
   <button class="menuBtn" id="menuBtn" aria-label="目次を開く" aria-expanded="false">☰</button>
   <a class="brand" href="index.html"><img src="icon.svg" alt="" width="28" height="28"><span>Cast Frost <b>素材メーカー</b></span></a>
   <div class="search"><input id="q" type="search" placeholder="🔍 使い方を検索(例:30MB、ループ、A100)" autocomplete="off" aria-label="使い方を検索"><div class="results" id="results" hidden></div></div>
-  <a class="appLink" href="dl/{NB_FILE}" download>⬇ ノートブック</a><a class="appLink" href="{HELP_URL}" target="_blank" rel="noopener">Cast Frost ヘルプ ↗</a>
+  <a class="appLink" href="https://colab.research.google.com/github/compact-git/cast-frost-effects/blob/main/cast-frost-effects-maker.ipynb" target="_blank" rel="noopener">▶ Colab で開く</a><a class="appLink" href="{HELP_URL}" target="_blank" rel="noopener">Cast Frost ヘルプ ↗</a>
 </header>
 <div class="wrap">
   <nav class="side" id="side" aria-label="使い方の目次">
