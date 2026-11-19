@@ -3,7 +3,7 @@
 import os, sys, re, gc, io, json, time, base64, shutil, threading, subprocess, traceback, html, platform
 from datetime import datetime
 
-VERSION = '0.1.0'
+VERSION = '0.1.1'
 AUTHOR = 'made by compact'
 SITE_URL = 'https://rider.tokyo/apps/cast/effects/'
 APP_URL = 'https://cast.rider.tokyo/'
@@ -16,6 +16,12 @@ MYDRIVE = DRIVE_MOUNT + '/MyDrive'
 OUT_DIR = MYDRIVE + '/CastFrost素材'          # 作ったものだけを置く(1階層)
 CACHE_DIR = MYDRIVE + '/CastFrost_models'      # モデルをしまう場所(作ったものとは分ける)
 MARK = '.cfx_complete'
+
+os.environ.setdefault('DIFFUSERS_VERBOSITY', 'error')       # Flax のお知らせなど、関係ない表示を出さない
+os.environ.setdefault('TRANSFORMERS_VERBOSITY', 'error')
+import warnings as _w
+_w.filterwarnings('ignore', message='.*HF_TOKEN.*')
+_w.filterwarnings('ignore', message='.*Flax classes are deprecated.*')
 
 STATE = {'active': None, 'unload': None, 'translator': None, 'cache': True}
 
@@ -45,6 +51,35 @@ def pip_install(pkgs, marker, log=print):
         raise RuntimeError('部品のインストールに失敗しました。\n' + p.stdout[-2000:])
     os.makedirs(ROOT, exist_ok=True)
     open(mk, 'w').write(VERSION)
+
+
+def fix_conflicts(log=print):
+    """Colab に最初から入っている部品で、じゃまになるものを外す(torchao が古いと LoRA が読み込めない)"""
+    try:
+        from importlib.metadata import version
+        v = version('torchao')
+    except Exception:
+        return
+    try:
+        nums = tuple(int(x) for x in re.findall(r'\d+', v)[:2])
+    except Exception:
+        nums = (0, 0)
+    if nums >= (0, 16):
+        return
+    log(f'じゃまになる部品(torchao {v})を外しています…')
+    subprocess.run([sys.executable, '-m', 'pip', 'uninstall', '-y', '-q', 'torchao'],
+                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+    for m in list(sys.modules):
+        if m == 'torchao' or m.startswith('torchao.'):
+            del sys.modules[m]
+    for mod, fn in (('peft.import_utils', 'is_torchao_available'), ('transformers.utils.import_utils', 'is_torchao_available'),
+                    ('diffusers.utils.import_utils', 'is_torchao_available')):
+        try:
+            f = getattr(sys.modules[mod], fn)
+            if hasattr(f, 'cache_clear'):
+                f.cache_clear()
+        except Exception:
+            pass
 
 
 def git_clone(url, commit, dest, log=print):
@@ -377,6 +412,9 @@ def friendly_error(e):
         return 'Colab のディスクがいっぱいです。「ランタイム」→「ランタイムを接続解除して削除」をしてから、もう一度始めてください。'
     if 'connection' in low or 'timed out' in low or 'http' in low and 'error' in low:
         return 'ダウンロード中に通信が切れました。少し待ってから、このセルをもう一度押してください。'
+    if 'torchao' in low:
+        return ('部品の組み合わせの問題で止まりました(torchao)。メニューの「ランタイム」→「セッションを再起動する」を押してから、'
+                'このセルを押し直してください。')
     if isinstance(e, RuntimeError) and re.search(r'[぀-ヿ]', str(e)):
         return str(e)
     return 'うまくいきませんでした。下の「くわしい記録」を開いて、内容を作者に知らせてください。'
@@ -494,8 +532,9 @@ class UI:
         self.diag_btn.on_click(lambda b: self.show_diag())
         self.extra_diag = []
         logs = W.Accordion(children=[W.VBox([self.log_out, self.diag_btn, self.diag_box])])
-        logs.set_title(0, 'くわしい記録(困った時に開く)')
+        logs.set_title(0, '📄 くわしい記録(困った時に開く)')
         logs.selected_index = None
+        self.logs = logs
         self.cards = []
         self.root = W.VBox([self.head, self.status, self.bar, self.form, self.bg, self.results,
                             W.HTML(STOP_HTML), logs, self.dl_out])
@@ -527,8 +566,11 @@ class UI:
     def error(self, e):
         with self.log_out:
             traceback.print_exc()
+            print(f'{type(e).__name__}: {e}')
         self.hide_bar()
-        self.say('⚠ ' + esc(friendly_error(e)), 'err')
+        self.logs.selected_index = 0   # くわしい記録を開いておく
+        self.say('⚠ ' + esc(friendly_error(e)) +
+                 '<br><small>くわしい内容は、この画面のいちばん下の「くわしい記録(困った時に開く)」に出ています。</small>', 'err')
 
     def show_diag(self):
         self.diag_box.value = diag_text(self.extra_diag)
