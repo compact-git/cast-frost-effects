@@ -3,7 +3,7 @@
 import os, sys, re, gc, io, json, time, base64, shutil, threading, subprocess, traceback, html, platform
 from datetime import datetime
 
-VERSION = '0.2.2'
+VERSION = '0.2.3'
 AUTHOR = 'made by compact'
 SITE_URL = 'https://rider.tokyo/apps/cast/effects/'
 APP_URL = 'https://cast.rider.tokyo/'

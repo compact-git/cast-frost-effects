@@ -138,7 +138,7 @@ class ImageMaker:
         pos = prompt_en.strip().rstrip(',') + m['suffix']
         neg = m['neg'] + ((', ' + neg_extra.strip()) if neg_extra.strip() else '')
         enc = self._encoder()
-        i2i = StableDiffusionXLImg2ImgPipeline.from_pipe(self.pipe)
+        i2i = StableDiffusionXLImg2ImgPipeline.from_pipe(self.pipe, vae=self.pipe.vae)  # 透明用の VAE は型が違うので、明示して渡す
         i2i.set_progress_bar_config(disable=True)
         latents = enc.encode(img.convert('RGBA'), self.pipe)
         g = torch.Generator('cuda').manual_seed(seed)
