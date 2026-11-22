@@ -3,7 +3,7 @@
 import os, sys, re, gc, io, json, time, base64, shutil, threading, subprocess, traceback, html, platform
 from datetime import datetime
 
-VERSION = '0.2.3'
+VERSION = '0.2.4'
 AUTHOR = 'made by compact'
 SITE_URL = 'https://rider.tokyo/apps/cast/effects/'
 APP_URL = 'https://cast.rider.tokyo/'
@@ -564,7 +564,8 @@ class UI:
         logs.selected_index = None
         self.logs = logs
         self.cards = []
-        self.root = W.VBox([self.head, self.status, self.bar, self.form, self.bg, self.results,
+        # お知らせと進み具合は、入力欄(ボタン)のすぐ下に出す(準備中は入力欄が空なので、見出しのすぐ下になる)
+        self.root = W.VBox([self.head, self.form, self.status, self.bar, self.bg, self.results,
                             W.HTML(STOP_HTML), logs, self.dl_out])
         display(self.root)
 
