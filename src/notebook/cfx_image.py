@@ -130,23 +130,57 @@ class ImageMaker:
             self._tenc = TransparentVAEEncoder(load_file(os.path.join(d, LD_ENCODER)))
         return self._tenc
 
+    def drop_cutter(self):
+        """切り抜きのモデルを GPU から下ろす(描き直しの前にメモリを空ける)"""
+        if self.cutter is not None:
+            self.cutter.unload()
+            self.cutter = None
+        C.free_memory()
+
     def redraw(self, img, prompt_en, key, seed, steps, cfg, strength, neg_extra=''):
-        """透明つきの画像を元に、プロンプトで描き直して、透明な PNG にする(LayerDiffuse の image to image)"""
+        """透明つきの画像を元に、プロンプトで描き直して、透明な PNG にする(LayerDiffuse の image to image)
+        GPU のメモリが足りない時は、モデルを順番に GPU に載せるやり方(省メモリ)に切り替えて、もう一度やる"""
         import torch
-        from diffusers import StableDiffusionXLImg2ImgPipeline
         m = MODELS[key]
         pos = prompt_en.strip().rstrip(',') + m['suffix']
         neg = m['neg'] + ((', ' + neg_extra.strip()) if neg_extra.strip() else '')
+        self.drop_cutter()
+        try:
+            return self._redraw(img, pos, neg, seed, steps, cfg, strength, offload=False)
+        except torch.OutOfMemoryError:
+            self.ui.log('(参考)' + C.gpu_mem_text())
+            self.ui.log('GPU のメモリが足りないので、省メモリのやり方に切り替えて、もう一度描き直します(時間が少しかかります)…')
+            C.free_memory()
+            return self._redraw(img, pos, neg, seed, steps, cfg, strength, offload=True)
+
+    def _redraw(self, img, pos, neg, seed, steps, cfg, strength, offload):
+        import torch
+        from diffusers import StableDiffusionXLImg2ImgPipeline
         enc = self._encoder()
-        i2i = StableDiffusionXLImg2ImgPipeline.from_pipe(self.pipe, vae=self.pipe.vae)  # 透明用の VAE は型が違うので、明示して渡す
+        # 透明用の VAE は型が違うので、明示して渡す(渡さないと引き継がれない)
+        i2i = StableDiffusionXLImg2ImgPipeline.from_pipe(self.pipe, vae=self.pipe.vae)
         i2i.set_progress_bar_config(disable=True)
-        latents = enc.encode(img.convert('RGBA'), self.pipe)
-        g = torch.Generator('cuda').manual_seed(seed)
-        n = max(1, int(round(steps * strength)))
-        out = i2i(prompt=pos, negative_prompt=neg, image=latents, strength=strength, num_inference_steps=steps,
-                  guidance_scale=cfg, generator=g,
-                  callback_on_step_end=self._cb(n), callback_on_step_end_tensor_inputs=['latents']).images[0]
-        return out.convert('RGBA')
+        try:
+            with torch.no_grad():
+                latents = enc.encode(img.convert('RGBA'), self.pipe)
+            C.free_memory()
+            if offload:
+                i2i.enable_model_cpu_offload()
+            g = torch.Generator('cuda').manual_seed(seed)
+            n = max(1, int(round(steps * strength)))
+            out = i2i(prompt=pos, negative_prompt=neg, image=latents, strength=strength, num_inference_steps=steps,
+                      guidance_scale=cfg, generator=g,
+                      callback_on_step_end=self._cb(n), callback_on_step_end_tensor_inputs=['latents']).images[0]
+            return out.convert('RGBA')
+        finally:
+            if offload:
+                try:
+                    i2i.remove_all_hooks()
+                except Exception:
+                    pass
+                self.pipe.to('cuda')
+            del i2i
+            C.free_memory()
 
     # ---------------------------------------------------------- 作る
     def make(self, prompt_en, key, size, seed, steps, cfg, neg_extra, method):

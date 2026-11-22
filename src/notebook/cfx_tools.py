@@ -51,6 +51,13 @@ class Tools:
             self.rife = cfx_rife.Interpolator(path, 'cuda' if self.gpu else 'cpu')
         return self.rife
 
+    def drop_side(self):
+        """描き直し以外の部品(切り抜き・なめらか化)を GPU から下ろす"""
+        if self.cutter is not None:
+            self.cutter.unload()
+        self.cutter = self.rife = None
+        C.free_memory()
+
     def get_maker(self, key, cache=True):
         if self.maker is None:
             import cfx_image
@@ -278,6 +285,8 @@ def _build_form(ui, tools, g):
                 ui.log('日本語を英語に直しています…')
             pe = C.translator(ui.log).translate(ss['prompt'], IM.MODELS[ss['model']]['tr'])
         img = MD.read_image(src)
+        # 先に使った「切り抜き」「仕上げ」の部品を GPU から下ろして、描き直しのメモリを空ける
+        tools.drop_side()
         if ss['precut']:
             ui.log('先に背景を切り抜いています…')
             img = mk.cut(img)

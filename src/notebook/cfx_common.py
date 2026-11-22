@@ -3,7 +3,7 @@
 import os, sys, re, gc, io, json, time, base64, shutil, threading, subprocess, traceback, html, platform
 from datetime import datetime
 
-VERSION = '0.2.4'
+VERSION = '0.2.5'
 AUTHOR = 'made by compact'
 SITE_URL = 'https://rider.tokyo/apps/cast/effects/'
 APP_URL = 'https://cast.rider.tokyo/'
@@ -132,6 +132,19 @@ def free_memory():
             torch.cuda.ipc_collect()
     except Exception:
         pass
+
+
+def gpu_mem_text():
+    """GPU のメモリの使い方(困った時の記録用)"""
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return 'GPU なし'
+        free, total = torch.cuda.mem_get_info()
+        return (f'GPU メモリ:使用中 {torch.cuda.memory_allocated() / 2**30:.1f}GB・確保 {torch.cuda.memory_reserved() / 2**30:.1f}GB'
+                f'・空き {free / 2**30:.1f}GB / 全体 {total / 2**30:.1f}GB')
+    except Exception as e:
+        return f'GPU メモリ:不明({e})'
 
 
 def switch_to(kind, log=print):
@@ -608,6 +621,8 @@ class UI:
         with self.log_out:
             traceback.print_exc()
             print(f'{type(e).__name__}: {e}')
+            if 'memory' in str(e).lower() or 'OutOfMemory' in type(e).__name__:
+                print(gpu_mem_text())
         self.hide_bar()
         self.logs.selected_index = 0   # くわしい記録を開いておく
         self.say('⚠ ' + esc(friendly_error(e)) +
