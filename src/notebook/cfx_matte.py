@@ -33,7 +33,7 @@ class Cutter:
         import torch.nn.functional as F
         self.load()
         h, w = rgb.shape[:2]
-        t = torch.from_numpy(np.ascontiguousarray(rgb)).to('cuda').permute(2, 0, 1)[None].float() / 255.0
+        t = torch.from_numpy(np.array(rgb, dtype=np.uint8, copy=True)).to('cuda').permute(2, 0, 1)[None].float() / 255.0
         t = F.interpolate(t, size=(1024, 1024), mode='bicubic', align_corners=False)
         mean = torch.tensor([0.485, 0.456, 0.406], device='cuda').view(1, 3, 1, 1)
         std = torch.tensor([0.229, 0.224, 0.225], device='cuda').view(1, 3, 1, 1)

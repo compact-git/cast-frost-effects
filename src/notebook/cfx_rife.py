@@ -129,7 +129,7 @@ class Interpolator:
         return ph, pw
 
     def _to_t(self, f, ph, pw):
-        t = torch.from_numpy(np.ascontiguousarray(f)).to(self.device).permute(2, 0, 1)[None].float() / 255.0
+        t = torch.from_numpy(np.array(f, copy=True)).to(self.device).permute(2, 0, 1)[None].float() / 255.0
         rgb, a = t[:, :3], t[:, 3:4]
         pm = rgb * a   # 透明なところの色に引っぱられないよう、アルファを掛けた色で動きを見る
         h, w = f.shape[:2]
