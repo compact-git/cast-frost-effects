@@ -186,7 +186,7 @@ def gen_frames_for(sec, loop, long_mode):
 # -------------------------------------------------------------- 画面
 def start():
     import ipywidgets as W
-    ui = C.UI('🎬 動画を作る(背景が透明な WebM)')
+    ui = C.UI('動画を作る(背景が透明な WebM)', 'video', '文字から、背景が透明な動画を作ります')
     try:
         import torch
         g = C.gpu_info()
@@ -266,7 +266,7 @@ def _build_form(ui, maker, plan):
     adv.set_title(0, '⚙ 高度な設定(ふつうは触らなくて大丈夫)')
     adv.selected_index = None
     est = W.HTML()
-    make_btn = W.Button(description='✨ 作る', button_style='success', layout=W.Layout(width='200px', height='42px'))
+    make_btn = ui.big_button('✨ 作る')
 
     def update_est(*a):
         nf, clips = gen_frames_for(length.value, loop.value, long_mode.value)

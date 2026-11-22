@@ -56,6 +56,11 @@ def import_wan(repo_dir):
     import wan.modules.model_dora_lightx2v as M
     A.flash_attention = sdpa_attention
     M.flash_attention = sdpa_attention
+    try:
+        import wan.modules.clip as CL
+        CL.flash_attention = sdpa_attention
+    except Exception:
+        pass
     return M
 
 
@@ -142,6 +147,19 @@ def lora_map(sd):
                 if key.endswith(suf):
                     diffs[key[len(prefix):].replace(suf, tgt)] = key
     return pairs, diffs
+
+
+def lora_matches(M, lora_path, cfg=None):
+    """LoRA のファイルが、本体のどれだけの重みに当てはまるかを数える(読み込む前に確かめる)"""
+    from safetensors import safe_open
+    cfg = dict(cfg or WAN_CFG)
+    with torch.device('meta'):
+        model = M.WanModel_dora_lightx2v(**cfg)
+    names = set(model.state_dict().keys())
+    with safe_open(lora_path, framework='pt', device='cpu') as f:
+        keys = list(f.keys())
+    pairs, diffs = lora_map({k: None for k in keys})
+    return sum(1 for k in list(pairs) + list(diffs) if k in names)
 
 
 def _load_sd(path):
@@ -417,3 +435,153 @@ def to_rgba(fgr, pha):
     a = ((pha.clamp(-1, 1) + 1) * 127.5).mean(0, keepdim=True).round().to(torch.uint8)
     x = torch.cat([rgb, a], 0).permute(1, 2, 3, 0).cpu().numpy()       # F,H,W,4
     return [np.ascontiguousarray(f) for f in x]
+
+
+# ---------------------------------------------------------------- 画像から動画(Wan2.1 I2V 14B 480P)
+I2V_CFG = dict(WAN_CFG, model_type='i2v', in_dim=36)
+VAE_MEAN = [-0.7571, -0.7089, -0.9113, 0.1075, -0.1745, 0.9653, -0.1517, 1.5508,
+            0.4134, -0.0715, 0.5517, -0.3632, -0.1922, -0.9497, 0.2503, -0.2921]
+VAE_STD = [2.8184, 1.4541, 2.3275, 2.6558, 1.2196, 1.7708, 2.6052, 2.0743,
+           3.2687, 2.1526, 2.8652, 1.5579, 1.6382, 1.1253, 2.8251, 1.9160]
+I2V_SHIFT = 5.0
+
+
+class PlainVAE:
+    """ふつうの Wan2.1 の VAE(色だけ。透明度は出さない)"""
+
+    def __init__(self, vae_pth, device='cuda'):
+        from wan.modules.vae import _video_vae
+        self.device = torch.device(device)
+        self.model = _video_vae(pretrained_path=vae_pth, z_dim=16).eval().requires_grad_(False).to(self.device)
+        self.scale = [torch.tensor(VAE_MEAN, device=self.device), 1.0 / torch.tensor(VAE_STD, device=self.device)]
+        self.z_dim = 16
+
+    @torch.no_grad()
+    def encode(self, video):
+        return self.model.encode(video.unsqueeze(0), self.scale).float().squeeze(0)
+
+    @torch.no_grad()
+    def decode(self, z):
+        return self.model.decode(z.unsqueeze(0), self.scale).float().clamp_(-1, 1).squeeze(0)
+
+
+def _autocast(device):
+    from contextlib import nullcontext
+    return torch.autocast('cuda', dtype=torch.bfloat16) if device.type == 'cuda' else nullcontext()
+
+
+def i2v_size(w, h, max_area=832 * 480):
+    """画像の縦横の比から、作る動画の大きさ(16 の倍数)を決める"""
+    ar = h / float(w)
+    lat_h = int(round((max_area * ar) ** 0.5 // 8 // 2 * 2))
+    lat_w = int(round((max_area / ar) ** 0.5 // 8 // 2 * 2))
+    return lat_w * 8, lat_h * 8
+
+
+class I2VWan:
+    """Wan2.1 I2V 14B(480P)+ LightX2V で、1枚の画像から動画のコマを作る"""
+
+    def __init__(self, dit, t5, clip, vae, device='cuda', t5_on_gpu=False, log=print):
+        self.dit, self.t5, self.clip, self.vae = dit, t5, clip, vae
+        self.device = torch.device(device)
+        self.t5_on_gpu = t5_on_gpu
+        self.log = log
+        self._ctx_cache = {}
+
+    def _free_gb(self):
+        if self.device.type != 'cuda':
+            return 999.0
+        return torch.cuda.mem_get_info()[0] / 1024 ** 3
+
+    def _dit_to(self, dev):
+        move_model(self.dit, dev)
+        if str(dev) == 'cpu' and self.device.type == 'cuda':
+            gc.collect()
+            torch.cuda.empty_cache()
+
+    @torch.no_grad()
+    def encode(self, prompt):
+        if prompt in self._ctx_cache:
+            return self._ctx_cache[prompt]
+        if self.t5_on_gpu or self.device.type != 'cuda':
+            ctx = self.t5([prompt], self.device)
+        else:
+            swapped = self._free_gb() < 13.0
+            if swapped:
+                self._dit_to('cpu')
+            self.t5.model.to(self.device)
+            try:
+                ctx = [c.clone() for c in self.t5([prompt], self.device)]
+            finally:
+                self.t5.model.to('cpu')
+                gc.collect()
+                torch.cuda.empty_cache()
+                if swapped:
+                    self._dit_to(self.device)
+        ctx = [c.to(self.device) for c in ctx]
+        if len(self._ctx_cache) > 16:
+            self._ctx_cache.clear()
+        self._ctx_cache[prompt] = ctx
+        return ctx
+
+    @torch.no_grad()
+    def generate(self, image, prompt, frame_num, seed, steps=4, max_area=832 * 480, progress=None):
+        """image:PIL の RGB 画像。戻り値:(RGB のコマ list、使ったシード、(幅, 高さ))"""
+        import numpy as np
+        import torch.nn.functional as F
+        from wan.utils.fm_solvers_unipc import FlowUniPCMultistepScheduler
+        dev = self.device
+        img = torch.from_numpy(np.array(image.convert('RGB'))).permute(2, 0, 1).float().div(255.0)
+        img = img.sub(0.5).div(0.5).to(dev)
+        w, h = i2v_size(img.shape[2], img.shape[1], max_area)
+        lat_h, lat_w = h // 8, w // 8
+        T = (frame_num - 1) // 4 + 1
+        seq_len = T * lat_h * lat_w // 4
+        seed = seed if seed >= 0 else random.randint(0, 2 ** 31 - 1)
+        g = torch.Generator(device=dev)
+        g.manual_seed(seed)
+        noise = torch.randn(16, T, lat_h, lat_w, dtype=torch.float32, generator=g, device=dev)
+        msk = torch.ones(1, frame_num, lat_h, lat_w, device=dev)
+        msk[:, 1:] = 0
+        msk = torch.cat([torch.repeat_interleave(msk[:, 0:1], repeats=4, dim=1), msk[:, 1:]], dim=1)
+        msk = msk.view(1, msk.shape[1] // 4, 4, lat_h, lat_w).transpose(1, 2)[0]
+        context = self.encode(prompt)
+        self.clip.model.to(dev)
+        with _autocast(dev):
+            clip_context = self.clip.visual([img[:, None, :, :].clone()])
+        if self.device.type == 'cuda' and self._free_gb() < 20:
+            self.clip.model.to('cpu')
+        first = F.interpolate(img[None].cpu(), size=(h, w), mode='bicubic', align_corners=False).transpose(0, 1)
+        vid = torch.cat([first, torch.zeros(3, frame_num - 1, h, w)], dim=1).to(dev)
+        y = self.vae.encode(vid)
+        del vid
+        y = torch.cat([msk, y])
+        sched = FlowUniPCMultistepScheduler(num_train_timesteps=1000, shift=1, use_dynamic_shifting=False)
+        sched.set_timesteps(steps, device=dev, shift=I2V_SHIFT)
+        latent = noise
+        with _autocast(dev):
+            for i, t in enumerate(sched.timesteps):
+                pred = self.dit([latent], t=torch.stack([t]), context=[context[0]], clip_fea=clip_context,
+                                seq_len=seq_len, y=[y])[0]
+                latent = sched.step(pred.unsqueeze(0), t, latent.unsqueeze(0), return_dict=False,
+                                    generator=g)[0].squeeze(0)
+                if progress:
+                    progress(i + 1, steps)
+        del noise, y
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
+        off = self.device.type == 'cuda' and self._free_gb() < 12.0
+        if off:
+            self._dit_to('cpu')
+        try:
+            vid = self.vae.decode(latent)
+        finally:
+            if off:
+                self._dit_to(self.device)
+        rgb = ((vid.clamp(-1, 1) + 1) * 127.5).round().to(torch.uint8).permute(1, 2, 3, 0).cpu().numpy()
+        frames = [np.ascontiguousarray(f) for f in rgb]
+        del vid, latent
+        gc.collect()
+        if self.device.type == 'cuda':
+            torch.cuda.empty_cache()
+        return frames, seed, (w, h)

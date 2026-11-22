@@ -34,8 +34,8 @@ SIZES = [
 METHODS = [('透明で作る(おすすめ)', 'layer'), ('ふつうに作って背景を切り抜く', 'cutout')]
 LD_LORA = ('rootonchair/diffuser_layerdiffuse', 'diffuser_layer_xl_transparent_attn.safetensors')
 LD_DECODER = ('LayerDiffusion/layerdiffusion-v1', 'vae_transparent_decoder.safetensors')
+LD_ENCODER = 'vae_transparent_encoder.safetensors'
 VAE_FIX = 'madebyollin/sdxl-vae-fp16-fix'
-BIREFNET = 'ZhengPeng7/BiRefNet'
 
 
 class ImageMaker:
@@ -49,7 +49,10 @@ class ImageMaker:
     # ---------------------------------------------------------- 読み込み
     def unload(self):
         self.pipe = None
+        if self.cutter is not None:
+            self.cutter.unload()
         self.cutter = None
+        self._tenc = None
         self.model_key = None
         C.free_memory()
 
@@ -112,30 +115,38 @@ class ImageMaker:
         else:
             pipe.scheduler = EulerDiscreteScheduler.from_config(cfg)
 
-    def _load_cutter(self):
-        if self.cutter is not None:
-            return
-        import torch
-        C.pip_install(['timm', 'kornia'], 'birefnet', self.ui.log)
-        from transformers import AutoModelForImageSegmentation
-        d = C.fetch_repo(BIREFNET, ['*.json', '*.py', '*.safetensors', 'LICENSE', 'README.md'], 'birefnet', log=self.ui.log)
-        self.cutter = AutoModelForImageSegmentation.from_pretrained(d, trust_remote_code=True).eval().to('cuda').half()
-
     def cut(self, img):
         """BiRefNet で背景を切り抜き、透明度を作る"""
-        import torch, numpy as np
-        from PIL import Image
-        self._load_cutter()
-        rgb = img.convert('RGB')
-        x = np.asarray(rgb.resize((1024, 1024), Image.BICUBIC)).astype('float32') / 255.0
-        x = (x - [0.485, 0.456, 0.406]) / [0.229, 0.224, 0.225]
-        t = torch.from_numpy(x.transpose(2, 0, 1)).float()[None].to('cuda').half()
-        with torch.no_grad():
-            pred = self.cutter(t)[-1].sigmoid().float().cpu()[0, 0].numpy()
-        a = Image.fromarray((pred * 255).clip(0, 255).astype('uint8')).resize(rgb.size, Image.BICUBIC)
-        out = rgb.copy()
-        out.putalpha(a)
-        return out
+        if self.cutter is None:
+            import cfx_matte
+            self.cutter = cfx_matte.Cutter(self.ui.log)
+        return self.cutter.cut_image(img)
+
+    def _encoder(self):
+        if getattr(self, '_tenc', None) is None:
+            from safetensors.torch import load_file
+            from layer_diffuse.models import TransparentVAEEncoder
+            d = C.fetch_repo(LD_DECODER[0], [LD_ENCODER], 'layerdiffuse-encoder', log=self.ui.log)
+            self._tenc = TransparentVAEEncoder(load_file(os.path.join(d, LD_ENCODER)))
+        return self._tenc
+
+    def redraw(self, img, prompt_en, key, seed, steps, cfg, strength, neg_extra=''):
+        """透明つきの画像を元に、プロンプトで描き直して、透明な PNG にする(LayerDiffuse の image to image)"""
+        import torch
+        from diffusers import StableDiffusionXLImg2ImgPipeline
+        m = MODELS[key]
+        pos = prompt_en.strip().rstrip(',') + m['suffix']
+        neg = m['neg'] + ((', ' + neg_extra.strip()) if neg_extra.strip() else '')
+        enc = self._encoder()
+        i2i = StableDiffusionXLImg2ImgPipeline.from_pipe(self.pipe)
+        i2i.set_progress_bar_config(disable=True)
+        latents = enc.encode(img.convert('RGBA'), self.pipe)
+        g = torch.Generator('cuda').manual_seed(seed)
+        n = max(1, int(round(steps * strength)))
+        out = i2i(prompt=pos, negative_prompt=neg, image=latents, strength=strength, num_inference_steps=steps,
+                  guidance_scale=cfg, generator=g,
+                  callback_on_step_end=self._cb(n), callback_on_step_end_tensor_inputs=['latents']).images[0]
+        return out.convert('RGBA')
 
     # ---------------------------------------------------------- 作る
     def make(self, prompt_en, key, size, seed, steps, cfg, neg_extra, method):
@@ -171,7 +182,7 @@ class ImageMaker:
 # -------------------------------------------------------------- 画面
 def start():
     import ipywidgets as W
-    ui = C.UI('🖼 静止画を作る(背景が透明な PNG)')
+    ui = C.UI('静止画を作る(背景が透明な PNG)', 'image', '文字から、背景が透明な画像を作ります')
     try:
         g = C.gpu_info() if _torch_ok() else None
     except Exception:
@@ -240,7 +251,7 @@ def _build_form(ui, maker, g):
         model, method, steps, cfg, neg, en, save, cache])])
     adv.set_title(0, '⚙ 高度な設定(ふつうは触らなくて大丈夫)')
     adv.selected_index = None
-    make_btn = W.Button(description='✨ 作る', button_style='success', layout=W.Layout(width='200px', height='42px'))
+    make_btn = ui.big_button('✨ 作る')
     ui.form.children = (prompt, W.HBox([count]), W.HBox([seed, seed_note]), size, adv, make_btn)
 
     def run(settings, n, first_seed):

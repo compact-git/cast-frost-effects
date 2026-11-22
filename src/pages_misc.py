@@ -37,6 +37,7 @@ body=f'''
 <tr><td>L4(24GB)</td><td>試験的(fp8・本体を 1 層ずつ運びながら動かす)</td><td>同じ</td><td>約6〜12分</td></tr>
 <tr><td>T4(16GB)</td><td>動画は作れません</td><td>—</td><td>—</td></tr>
 </table>
+<p>🎞 画像から動画を作る も同じ GPU の分け方で動きます(A100 で 5秒 1本 約3〜5分。背景の切り抜きの時間を含みます)。🛠 素材を加工する の「背景を切り抜く」「描き直す」は T4 でも動きます。</p>
 <ul>
   <li><b>bf16</b> と <b>fp8</b> は、モデルの数字をしまう細かさです。fp8 はメモリを半分にできるかわりに、ごくわずかに細部が変わることがあります(見た目の差はほとんどありません)。</li>
   <li>L4 では、本体(約14GB)を GPU に置いたままにせず、パソコンでいうメモリ(RAM)に置いて、計算する層だけを GPU に運びながら動かします。文字を読む部品(T5)も、使う時だけ GPU に載せます。そのぶん時間がかかります。</li>
@@ -60,6 +61,9 @@ body=f'''
 {items([
  ('「GPU がつながっていません」と出る', 'メニューの [[ui:ランタイム]] → [[ui:ランタイムのタイプを変更]] で、A100・L4・T4 のどれかを選んで保存し、セルを押し直します。'),
  ('「この GPU では、動画を作るにはメモリが足りません」', 'T4 では動画は作れません。A100(おすすめ)か L4 を選んでください。静止画は T4 でも作れます。'),
+ ('📤 ファイルを選ぶ で動画を選んでも、なかなか終わらない・止まる', '大きい動画は、アップロードに時間がかかります。100MB を超える時は、Google ドライブの <b>マイドライブ / CastFrost素材_入力</b> に入れてから、[[ui:📁 ドライブから選ぶ(大きいファイル向け)]] で選んでください。'),
+ ('「この機能は画像だけに使えます」「動画だけに使えます」と出る', '🛠 素材を加工する で、選んだ素材とやることが合っていません。「動画の仕上げ」は動画だけ、「描き直す」は画像だけです。'),
+ ('画像から動画で、背景が残る・キャラが欠ける', '[[ui:背景の抜き方]] を変えます(光るものは「光・炎・エフェクト」、キャラ・物は「物・キャラ」)。元の画像を、先に [[p:g-tools|素材を加工する]] の「背景を切り抜く」で透明にしてから渡すのも効果があります。'),
  ('「Colab で開く」で開いたノートブックが保存できない', '保存しなくても使えます(作った素材はドライブに保存されます)。ノートブックを残したい時は [[ui:ファイル]] → [[ui:ドライブにコピーを保存]] を押します。'),
  ('A100 を選んだのに L4 になる', 'Colab は、空いている GPU を割り当てます。A100 が混んでいる時は、A100 を選んでも L4 などになります(ノートブックの側では変えられません)。画面の上の「GPU」で、つながった GPU を確かめられます。A100 にしたい時は、[[ui:ランタイム]] → [[ui:ランタイムを接続解除して削除]] をして、時間をおいてから、もう一度 A100 を選んでつなぎ直してください。L4 のままでも、動画は「試験的」に作れます(時間はかかります)。'),
  ('「GPU のメモリが前の作業で使われたまま」と出る', '静止画のあとに動画のセルを押した時などに出ます。メニューの [[ui:ランタイム]] → [[ui:セッションを再起動する]] を押してから、動画のセルを押し直します。'),
@@ -122,6 +126,9 @@ body=items([
  ('Wan / Wan-Alpha', 'Wan は動画を作るモデル。Wan-Alpha は、それをもとに、最初から透明な部分を持った動画を作れるようにしたもの。'),
  ('LightX2V', 'Wan を、少ないステップ(4回)で作れるようにする部品。'),
  ('RIFE', 'コマとコマの間に新しいコマを作って、動画をなめらかにするモデル。'),
+ ('画像から動画(I2V)', '1枚の画像を最初のコマにして、続きの動きを AI が作ること。'),
+ ('CLIP', '画像の中身を読み取る部品。画像から動画を作る時に使います。'),
+ ('黒い背景から抜く', '黒い背景の上の光るものを、明るさから透明にするやり方(ルマキー)。'),
  ('Qwen3', '日本語のプロンプトを英語に直すのに使う言葉のモデル。'),
  ('ステップ数', '絵や動画を作る時に、少しずつ仕上げていく回数。'),
  ('CFG', 'プロンプトにどれだけ従うかの強さ。'),
@@ -154,20 +161,22 @@ body=f'''
 <tr><td><a href="https://huggingface.co/stabilityai/stable-diffusion-xl-base-1.0" target="_blank" rel="noopener">Stable Diffusion XL 1.0 base</a>(Stability AI)</td><td>静止画のモデル(ふつう)</td><td>CreativeML Open RAIL++-M</td></tr>
 <tr><td><a href="https://huggingface.co/cagliostrolab/animagine-xl-4.0" target="_blank" rel="noopener">Animagine XL 4.0</a>(Cagliostro Research Lab)</td><td>静止画のモデル(アニメ調)</td><td>CreativeML Open RAIL++-M</td></tr>
 <tr><td><a href="https://huggingface.co/SG161222/RealVisXL_V5.0" target="_blank" rel="noopener">RealVisXL V5.0</a>(SG161222)</td><td>静止画のモデル(実写調)</td><td>CreativeML Open RAIL++-M</td></tr>
-<tr><td><a href="https://huggingface.co/LayerDiffusion/layerdiffusion-v1" target="_blank" rel="noopener">LayerDiffusion v1</a>(Lvmin Zhang・Maneesh Agrawala)</td><td>透明な部分を取り出す部品(デコーダー)</td><td>CreativeML Open RAIL-M</td></tr>
+<tr><td><a href="https://huggingface.co/LayerDiffusion/layerdiffusion-v1" target="_blank" rel="noopener">LayerDiffusion v1</a>(Lvmin Zhang・Maneesh Agrawala)</td><td>透明な部分を取り出す・読み込む部品(デコーダー・エンコーダー)</td><td>CreativeML Open RAIL-M</td></tr>
 <tr><td><a href="https://github.com/rootonchair/diffuser_layerdiffuse" target="_blank" rel="noopener">diffuser_layerdiffuse</a>(rootonchair)</td><td>LayerDiffuse を diffusers で動かすプログラムと、変換した LoRA</td><td>MIT(LoRA の元の重みは LayerDiffusion v1 と同じ Open RAIL-M)</td></tr>
 <tr><td><a href="https://huggingface.co/madebyollin/sdxl-vae-fp16-fix" target="_blank" rel="noopener">SDXL-VAE-FP16-Fix</a>(madebyollin)</td><td>絵を仕上げる部品(VAE)</td><td>MIT</td></tr>
-<tr><td><a href="https://huggingface.co/ZhengPeng7/BiRefNet" target="_blank" rel="noopener">BiRefNet</a>(Peng Zheng ほか)</td><td>背景の切り抜き(使った時だけ)</td><td>MIT</td></tr>
+<tr><td><a href="https://huggingface.co/ZhengPeng7/BiRefNet" target="_blank" rel="noopener">BiRefNet</a>(Peng Zheng ほか)</td><td>背景の切り抜き(静止画の「切り抜く」、加工、画像から動画)</td><td>MIT</td></tr>
 </table>
 
 <h2>動画</h2>
 <table class="tbl">
 <tr><th>名前(作者)</th><th>何に使うか</th><th>ライセンス</th></tr>
 <tr><td><a href="https://huggingface.co/Wan-AI/Wan2.1-T2V-14B" target="_blank" rel="noopener">Wan2.1-T2V-14B</a>(Wan-AI / Alibaba)</td><td>動画のモデルの元・文字を読む部品(T5)・VAE</td><td>Apache-2.0</td></tr>
-<tr><td><a href="https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged" target="_blank" rel="noopener">Wan 2.1 ComfyUI repackaged</a>(Comfy-Org)</td><td>Wan2.1-T2V-14B の本体を1つのファイルにまとめたもの(中身は同じ)</td><td>Apache-2.0</td></tr>
+<tr><td><a href="https://huggingface.co/Comfy-Org/Wan_2.1_ComfyUI_repackaged" target="_blank" rel="noopener">Wan 2.1 ComfyUI repackaged</a>(Comfy-Org)</td><td>Wan2.1-T2V-14B・I2V-14B-480P の本体を1つのファイルにまとめたもの(中身は同じ)</td><td>Apache-2.0</td></tr>
 <tr><td><a href="https://huggingface.co/htdong/Wan-Alpha-v2.0" target="_blank" rel="noopener">Wan-Alpha v2.0</a>・<a href="https://huggingface.co/htdong/Wan-Alpha-VAE" target="_blank" rel="noopener">Wan-Alpha VAE</a>(Haotian Dong ほか / WeChat Vision)</td><td>透明な部分を持った動画にする部品(DoRA)と、色・透明度を取り出す VAE</td><td>Apache-2.0</td></tr>
 <tr><td><a href="https://github.com/WeChatCV/Wan-Alpha" target="_blank" rel="noopener">Wan-Alpha のプログラム</a>(WeChat Vision)</td><td>動画を作るプログラム(一部を置き換えて使用)</td><td>MIT</td></tr>
 <tr><td><a href="https://huggingface.co/lightx2v/Wan2.1-T2V-14B-StepDistill-CfgDistill-Lightx2v" target="_blank" rel="noopener">LightX2V T2V 14B StepDistill LoRA</a>(LightX2V)</td><td>4ステップで速く作る部品</td><td>Apache-2.0</td></tr>
+<tr><td><a href="https://huggingface.co/Wan-AI/Wan2.1-I2V-14B-480P" target="_blank" rel="noopener">Wan2.1-I2V-14B-480P</a>(Wan-AI / Alibaba)</td><td>画像から動画を作る(本体の元・画像を読む部品 CLIP)</td><td>Apache-2.0</td></tr>
+<tr><td><a href="https://huggingface.co/lightx2v/Wan2.1-Distill-Loras" target="_blank" rel="noopener">LightX2V I2V 14B 480P LoRA</a>(LightX2V)</td><td>画像から動画を 4 ステップで速く作る部品</td><td>Apache-2.0</td></tr>
 <tr><td><a href="https://github.com/hzwer/Practical-RIFE" target="_blank" rel="noopener">RIFE v4.25</a>(hzwer)・<a href="https://github.com/HolyWu/vs-rife" target="_blank" rel="noopener">vs-rife</a>(HolyWu)</td><td>コマを補ってなめらかにする(重みは vs-rife の配布物を使用)</td><td>MIT</td></tr>
 </table>
 
@@ -188,6 +197,14 @@ M(id='changelog', nav='更新履歴', title='更新履歴',
 lead='ノートブックと使い方サイトの変更の記録です。',
 kw='更新 履歴 バージョン 変更',
 body=f'''
+<h2>v0.2.0(2026年11月22日)</h2>
+<ul>
+  <li>[[cell:🎞 画像から動画を作る]] を追加:Wan2.1 I2V 14B 480P + LightX2V で 1 枚の画像を動かし、背景を抜いて(切り抜く/黒い背景から抜く)、透明な WebM に。A100 向け(L4 は試験的)。</li>
+  <li>[[cell:🛠 素材を加工する]] を追加:🎬 動画の仕上げ・🌙 黒い背景を透明に・✂ 背景を切り抜く(画像・動画)・🎨 画像を元に描き直す(LayerDiffuse)。素材はセルの中のアップロードで渡せます(大きいファイルはドライブの CastFrost素材_入力 から)。</li>
+  <li>見た目:セルごとに色の帯(静止画=青・動画=紫・画像から動画=橙・加工=緑)。ノートブックも「✍ 文字から作る」「🧩 素材から作る」「🛑 おわる」「📖 くわしい説明」の色つきの見出しで分け、長い表はいちばん下へ。</li>
+  <li>使い方サイト:画像から動画を作る・素材を加工する・それぞれの画面の項目のページを追加。</li>
+</ul>
+
 <h2>v0.1.3(2026年11月19日)</h2>
 <ul>
   <li>使い方サイト:ノートブックは「▶ Colab で開く」ボタンで開く方法をおすすめにしました(いつも最新の版が開きます)。ダウンロードして入れる方法は、その次にしました。ページの上のボタンも「▶ Colab で開く」にしました。</li>

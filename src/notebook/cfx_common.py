@@ -3,7 +3,7 @@
 import os, sys, re, gc, io, json, time, base64, shutil, threading, subprocess, traceback, html, platform
 from datetime import datetime
 
-VERSION = '0.1.3'
+VERSION = '0.2.0'
 AUTHOR = 'made by compact'
 SITE_URL = 'https://rider.tokyo/apps/cast/effects/'
 APP_URL = 'https://cast.rider.tokyo/'
@@ -447,8 +447,12 @@ def diag_text(extra=None):
 CSS = """
 <style>
 .cfx{font-family:"M PLUS Rounded 1c","Hiragino Maru Gothic ProN","Yu Gothic UI","Meiryo",system-ui,sans-serif;color:#16304a;line-height:1.7}
-.cfx-head{background:linear-gradient(135deg,#e9f2fb,#f6faff);border:1px solid #c9dbee;border-radius:14px;padding:12px 16px;margin:4px 0 8px}
-.cfx-head h3{margin:0 0 4px;font-size:18px;color:#1d5a96}
+.cfx-banner{display:flex;gap:14px;align-items:center;color:#fff;border-radius:16px;padding:14px 18px;margin:4px 0 6px;box-shadow:0 3px 10px rgba(0,0,0,.12)}
+.cfx-bicon{font-size:34px;line-height:1;background:rgba(255,255,255,.22);border-radius:14px;padding:8px 10px}
+.cfx-btitle{font-size:21px;font-weight:800;letter-spacing:.02em}
+.cfx-bsub{font-size:13px;opacity:.95}
+.cfx-head{background:#f6faff;border:1px solid #c9dbee;border-radius:14px;padding:8px 14px;margin:0 0 8px}
+.cfx-sec{border-radius:10px;padding:8px 12px;margin:10px 0 6px;font-size:15px}
 .cfx-head small{color:#4d6680}
 .cfx-pill{display:inline-block;padding:1px 10px;border-radius:999px;background:#dcebfa;color:#1d5a96;font-size:12px;font-weight:700;margin-right:6px}
 .cfx-warn{background:#fff3dc;border:1px solid #f0d49a;color:#7a4600;border-radius:10px;padding:8px 12px;margin:6px 0}
@@ -480,14 +484,34 @@ def preview_html(kind, path, bg='chk'):
     return f'<div class="cfx-prev {cls}">{inner}</div>'
 
 
-def header_html(title, gpu, note=''):
+ACCENTS = {
+    'image': ('#2f86d8', '#6aaef0', '🖼'),
+    'video': ('#7c4dff', '#b39dff', '🎬'),
+    'i2v': ('#f0700f', '#ffb066', '🎞'),
+    'tools': ('#0f9d74', '#5fd3ad', '🛠'),
+}
+
+
+def header_html(title, gpu, note='', accent='image', sub=''):
+    c1, c2, icon = ACCENTS.get(accent, ACCENTS['image'])
     g = f"{gpu['name']}({gpu['total_gb']:.0f}GB)" if gpu else 'なし'
     link = folder_url(OUT_DIR) if drive_ok() and os.path.isdir(OUT_DIR) else None
     save = (f'保存先:<a href="{link}" target="_blank">マイドライブ/CastFrost素材/</a>' if link
             else '保存先:ドライブにつながっていないので、ダウンロードだけできます')
-    return (CSS + f'<div class="cfx cfx-head"><h3>{html.escape(title)}</h3>'
-            f'<span class="cfx-pill">v{VERSION}</span><span class="cfx-pill">GPU:{html.escape(g)}</span>'
+    return (CSS + f'<div class="cfx cfx-banner" style="background:linear-gradient(135deg,{c1},{c2})">'
+            f'<div class="cfx-bicon">{icon}</div><div><div class="cfx-btitle">{html.escape(title)}</div>'
+            f'<div class="cfx-bsub">{html.escape(sub)}</div></div></div>'
+            f'<div class="cfx cfx-head" style="border-color:{c2}">'
+            f'<span class="cfx-pill" style="background:{c1};color:#fff">v{VERSION}</span>'
+            f'<span class="cfx-pill">GPU:{html.escape(g)}</span>'
             f'<small>{AUTHOR}</small><br><small>{save}</small>{note}</div>')
+
+
+def section_html(title, accent='image', text=''):
+    """機能の見出し(色の帯つき)"""
+    c1, c2, _ = ACCENTS.get(accent, ACCENTS['image'])
+    return (CSS + f'<div class="cfx cfx-sec" style="border-left:6px solid {c1};background:linear-gradient(90deg,{c2}33,transparent)">'
+            f'<b style="color:{c1}">{title}</b>' + (f'<div class="cfx-meta">{text}</div>' if text else '') + '</div>')
 
 
 STOP_HTML = ('<div class="cfx cfx-meta">🛑 使い終わったら GPU を止めましょう(つないだままだとユニットが減り続けます):'
@@ -508,7 +532,7 @@ def esc(s):
 class UI:
     """セルの中に出す画面(ipywidgets)。静止画と動画で使い回す"""
 
-    def __init__(self, title):
+    def __init__(self, title, accent='image', sub=''):
         import ipywidgets as W
         from IPython.display import display
         try:
@@ -518,6 +542,8 @@ class UI:
             pass
         self.W = W
         self.title = title
+        self.accent = accent
+        self.sub = sub
         self.head = W.HTML()
         self.status = W.HTML()
         self.bar = W.IntProgress(min=0, max=100, value=0, layout=W.Layout(width='100%', visibility='hidden'))
@@ -543,7 +569,19 @@ class UI:
 
     # 表示
     def set_header(self, gpu, note=''):
-        self.head.value = header_html(self.title, gpu, note)
+        self.head.value = header_html(self.title, gpu, note, self.accent, self.sub)
+
+    def big_button(self, text, color=None):
+        """「作る」などの大きいボタン(セルの色)"""
+        W = self.W
+        b = W.Button(description=text, layout=W.Layout(width='220px', height='46px'))
+        b.style.button_color = color or ACCENTS.get(self.accent, ACCENTS['image'])[0]
+        b.style.font_weight = 'bold'
+        try:
+            b.style.text_color = 'white'
+        except Exception:
+            pass
+        return b
 
     def say(self, text, kind='ok'):
         self.status.value = msg_html(kind, text)
@@ -587,9 +625,12 @@ class UI:
         redo = W.Button(description='🔁 作り直し', layout=W.Layout(width='160px'),
                         tooltip='同じ設定のまま、シードだけ変えてもう1つ作ります')
         dl.on_click(lambda b: self.download(path))
-        redo.on_click(lambda b: on_redo())
+        btns = [dl]
+        if on_redo is not None:
+            redo.on_click(lambda b: on_redo())
+            btns.append(redo)
         card['prev_w'] = prev
-        box = W.HBox([prev, W.VBox([info, W.HBox([dl, redo])])],
+        box = W.HBox([prev, W.VBox([info, W.HBox(btns)])],
                      layout=W.Layout(border='1px solid #c9dbee', padding='8px', margin='6px 0'))
         card['box'] = box
         self.cards.insert(0, card)

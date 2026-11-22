@@ -8,8 +8,10 @@ kw='トップ 目次 できること はじめに 何が作れる',
 body=f'''
 <h2>何が作れるか</h2>
 <div class="cards">
-  <a class="card" href="g-image.html"><span class="ci">🖼</span><b>背景が透明な静止画</b><small>PNG。スタンプ・アイコン・立ち絵・テロップの枠・光のエフェクトなど</small></a>
-  <a class="card" href="g-video.html"><span class="ci">🎬</span><b>背景が透明な動画</b><small>WebM(VP9)。炎・きらきら・煙・光などのループするエフェクト</small></a>
+  <a class="card" href="g-image.html" style="border-top:5px solid #2f86d8"><span class="ci">🖼</span><b>背景が透明な静止画</b><small>PNG。スタンプ・アイコン・立ち絵・テロップの枠・光のエフェクトなど</small></a>
+  <a class="card" href="g-video.html" style="border-top:5px solid #7c4dff"><span class="ci">🎬</span><b>背景が透明な動画</b><small>WebM(VP9)。炎・きらきら・煙・光などのループするエフェクト</small></a>
+  <a class="card" href="g-i2v.html" style="border-top:5px solid #f0700f"><span class="ci">🎞</span><b>画像を動かす</b><small>1枚の画像を動かして、背景を抜いた透明な動画に</small></a>
+  <a class="card" href="g-tools.html" style="border-top:5px solid #0f9d74"><span class="ci">🛠</span><b>持っている素材を加工</b><small>背景の切り抜き・黒を透明に・動画の仕上げ・描き直し</small></a>
   <a class="card" href="g-castfrost.html"><span class="ci">🎆</span><b>Cast Frost にそのまま入れる</b><small>🎆 演出・⚡ 発動の「＋ 素材を追加」に入る形(1つ30MBまで)で書き出します</small></a>
   <a class="card" href="g-prompt.html"><span class="ci">✍</span><b>日本語で頼める</b><small>プロンプトは日本語でOK。ノートブックの中で英語に直してから作ります</small></a>
 </div>
@@ -31,8 +33,8 @@ body=f'''
 
 <h2>このサイトの見方</h2>
 <ul class="linkList">
-  <li><b>使い方</b>:[[p:g-image|静止画を作る]] / [[p:g-video|動画を作る]] / [[p:g-result|作り直す・ダウンロード・保存先]] / [[p:g-castfrost|Cast Frost に入れる]] / [[p:g-prompt|プロンプトの書き方の例]] / [[p:g-stop|使い終わったら(GPU を止める)]]</li>
-  <li><b>画面の項目</b>:[[p:r-image|🖼 静止画のセル]] / [[p:r-video|🎬 動画のセル]] / [[p:r-common|共通の部分(結果・記録)]] — 画面に出るすべての項目の説明</li>
+  <li><b>使い方</b>:[[p:g-image|静止画を作る]] / [[p:g-video|動画を作る]] / [[p:g-i2v|画像から動画を作る]] / [[p:g-tools|素材を加工する]] / [[p:g-result|作り直す・ダウンロード・保存先]] / [[p:g-castfrost|Cast Frost に入れる]] / [[p:g-prompt|プロンプトの書き方の例]] / [[p:g-stop|使い終わったら(GPU を止める)]]</li>
+  <li><b>画面の項目</b>:[[p:r-image|🖼 静止画のセル]] / [[p:r-video|🎬 動画のセル]] / [[p:r-i2v|🎞 画像から動画のセル]] / [[p:r-tools|🛠 加工のセル]] / [[p:r-common|共通の部分(結果・記録)]] — 画面に出るすべての項目の説明</li>
   <li><b>資料</b>:[[p:size|30MB と長さ・画質]] / [[p:trouble|困った時]] / [[p:glossary|用語集]] / [[p:licenses|モデルとライセンス]] / [[p:changelog|更新履歴]]</li>
 </ul>
 '''))
@@ -89,17 +91,18 @@ body=f'''
 </table>
 <ul>
   <li>静止画だけを作る日は、L4 や T4 にするとユニットの減りが少なくなります。</li>
+  <li>🎞 画像から動画を作る は、動画と同じく <b>A100</b> がおすすめです(L4 は試験的、T4 では作れません)。🛠 素材を加工する は、T4 でも使えます。</li>
   <li>選んだ GPU が混んでいて使えない時は、Colab が別の GPU をつなぐことがあります。セルを押すと、つながった GPU が画面の上に出ます。</li>
   <li>動画は GPU のメモリをたくさん使うので、A100 以外では「試験的」です。くわしくは [[p:size|30MB と長さ・画質]] の「GPU ごとにできること」。</li>
 </ul>
 
 <h2>3. セルを押す(ドライブにつなぐ)</h2>
 {steps(
- '作りたいものに合わせて、[[cell:🖼 静止画を作る]] か [[cell:🎬 動画を作る]] のセルの左の <b>▶(再生ボタン)</b>を押します。',
+ '使いたいセルの左の <b>▶(再生ボタン)</b>を押します。セルは色つきの見出しで 2 つに分かれています:<b>✍ 文字から作る</b>([[cell:🖼 静止画を作る]]・[[cell:🎬 動画を作る]])と、<b>🧩 素材から作る</b>([[cell:🎞 画像から動画を作る]]・[[cell:🛠 素材を加工する]])。',
  '「このノートブックは Google が作成したものではありません」と出たら、[[ui:このまま実行]] を押します。',
  '「Google ドライブへのアクセスを許可」の画面が出たら、自分のアカウントを選んで [[ui:許可]] します。作った素材は <b>マイドライブ / CastFrost素材</b> に保存されます。',
- '準備(部品のインストール → モデルのダウンロード → GPU への読み込み)が始まります。1回目は、静止画で約3〜5分、動画で約10〜15分かかります。',
- 'セルの下に入力欄と [[ui:✨ 作る]] ボタンが出たら、準備ができています。',
+ '準備(部品のインストール → モデルのダウンロード → GPU への読み込み)が始まります。1回目は、静止画・加工で約3〜5分、動画・画像から動画で約10〜15分かかります。',
+ 'セルの下に、色つきの帯(セルごとに色が違います)と入力欄が出たら、準備ができています。',
 )}
 {warn('ドライブへのアクセスを許可しなくても使えますが、その時は作ったものをドライブに保存せず、ダウンロードだけになります。モデルもドライブにしまわないので、毎回ダウンロードになります。')}
 

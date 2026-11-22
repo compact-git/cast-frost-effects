@@ -48,3 +48,9 @@ COLAB = 'https://colab.research.google.com/github/compact-git/cast-frost-effects
 DL = f'<a class="bigBtn ghost" href="dl/{NB_FILE}" download>⬇ ノートブックをダウンロード(v{VERSION})</a>'
 OPEN = f'<a class="bigBtn" href="{COLAB}" target="_blank" rel="noopener">▶ Colab で開く(おすすめ)</a>'
 BADGE = f'<a class="badge" href="{COLAB}" target="_blank" rel="noopener"><img src="https://colab.research.google.com/assets/colab-badge.svg" alt="Colab で開く"></a>'
+
+
+def band(icon, title, c1, c2):
+    """機能のページのいちばん上に出す、色つきの帯(ノートブックの色とそろえる)"""
+    return (f'<div class="fband" style="background:linear-gradient(135deg,{c1},{c2})">'
+            f'<span class="fbi">{icon}</span><b>{title}</b></div>')
