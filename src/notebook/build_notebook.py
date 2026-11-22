@@ -39,16 +39,54 @@ if _d not in _s.path:
     _s.path.insert(0, _d)
 '''.format(v=VERSION, p=P)
 
-def band(icon, title, sub, c1, c2):
-    """色つきの見出し(Colab のテキストセル用)"""
-    return (f'<div style="background:linear-gradient(135deg,{c1},{c2});color:#fff;border-radius:14px;'
-            f'padding:12px 16px;margin:6px 0"><span style="font-size:26px">{icon}</span> '
-            f'<b style="font-size:20px">{title}</b><br><span style="font-size:13px">{sub}</span></div>')
+def _x(t):
+    return str(t).replace('&', '&amp;').replace('<', '&lt;').replace('>', '&gt;').replace('"', '&quot;')
 
 
-def chip(icon, title, c1):
-    return (f'<td style="background:{c1};color:#fff;border-radius:10px;padding:8px 12px;font-weight:bold">'
-            f'{icon} {title}</td>')
+def _img(svg, alt):
+    """Colab のテキストセルは style を消すので、色つきの見出しは SVG の画像にして埋め込む"""
+    return f'<img alt="{_x(alt)}" src="data:image/svg+xml;base64,{base64.b64encode(svg.encode("utf-8")).decode()}">'
+
+
+_FONT = "font-family=\"'Noto Sans JP','Hiragino Sans','Yu Gothic','Meiryo',sans-serif\""
+
+
+def _grad(c1, c2):
+    return (f'<defs><linearGradient id="g" x1="0" x2="1"><stop offset="0" stop-color="{c1}"/>'
+            f'<stop offset="1" stop-color="{c2}"/></linearGradient></defs>')
+
+
+def band(icon, title, sub, c1, c2, tag=None, w=780):
+    """色つきの見出し。tag を付けると左に白い札(「分類」など)を出す"""
+    h = 78 if tag else 64
+    x = 18
+    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" {_FONT}>',
+             _grad(c1, c2), f'<rect width="{w}" height="{h}" rx="14" fill="url(#g)"/>']
+    if tag:
+        parts.append(f'<rect x="14" y="14" width="64" height="{h - 28}" rx="10" fill="#ffffff"/>'
+                     f'<text x="46" y="{h / 2 + 7:.0f}" text-anchor="middle" font-size="19" font-weight="bold" '
+                     f'fill="{c1}">{_x(tag)}</text>')
+        x = 94
+    ty = 34 if tag else 30
+    parts.append(f'<text x="{x}" y="{ty}" font-size="{24 if tag else 21}" font-weight="bold" fill="#ffffff">'
+                 f'{_x(icon)} {_x(title)}</text>')
+    parts.append(f'<text x="{x + 2}" y="{ty + 24}" font-size="13.5" fill="#ffffff" fill-opacity="0.95">{_x(sub)}</text>')
+    parts.append('</svg>')
+    return _img(''.join(parts), f'{icon} {title}')
+
+
+def chips(items, w=780):
+    """機能の一覧(色つきの札を横に並べた画像)"""
+    h, gap = 40, 8
+    cw = (w - gap * (len(items) - 1)) / len(items)
+    parts = [f'<svg xmlns="http://www.w3.org/2000/svg" width="{w}" height="{h}" viewBox="0 0 {w} {h}" {_FONT}>']
+    for i, (icon, title, c) in enumerate(items):
+        x = i * (cw + gap)
+        parts.append(f'<rect x="{x:.1f}" y="0" width="{cw:.1f}" height="{h}" rx="10" fill="{c}"/>'
+                     f'<text x="{x + cw / 2:.1f}" y="26" text-anchor="middle" font-size="15" font-weight="bold" '
+                     f'fill="#ffffff">{_x(icon)} {_x(title)}</text>')
+    parts.append('</svg>')
+    return _img(''.join(parts), ' / '.join(t for _, t, _ in items))
 
 
 cells = [
@@ -58,26 +96,24 @@ cells = [
 **つかい方**:① メニューの **ランタイム** → **ランタイムのタイプを変更** で **A100** を選ぶ → ② 使いたいセルの **▶** を押す → ③ セルの下に出る画面で作る。<br>
 使い終わったら、いちばん下の **🛑 GPU を止める** を押します。くわしくは **[使い方サイト]({SITE})**。
 
-<table style="border-collapse:separate;border-spacing:6px"><tr>
-{chip('🖼', '静止画を作る', '#2f86d8')}{chip('🎬', '動画を作る', '#7c4dff')}{chip('🎞', '画像から動画を作る', '#f0700f')}{chip('🛠', '素材を加工する', '#0f9d74')}
-</tr></table>
+{chips([('🖼', '静止画を作る', '#2f86d8'), ('🎬', '動画を作る', '#7c4dff'), ('🎞', '画像から動画を作る', '#f0700f'), ('🛠', '素材を加工する', '#0f9d74')])}
 """),
-    md(band('✍', '文字から作る', 'プロンプト(日本語でOK)を書くだけで、背景が透明な素材を作ります', '#2f86d8', '#7c4dff')),
+    md(band('✍', '文章(命令)から作る', 'プロンプト(どんな素材がほしいかを日本語で書いた文章)だけで、背景が透明な素材を作ります', '#1f6fc2', '#6a3de8', tag='分類')),
     code(f"""
-#@title 🖼 静止画を作る(文字 → 透明な PNG)
+#@title 🖼 静止画を作る(文章 → 透明な PNG)
 #@markdown ▶ を押すと準備が始まり、このセルの下に入力欄が出ます(1回目は 3〜5 分ほど)。T4・L4 でも作れます。
 {BOOT}
 import cfx_image
 cfx_image.start()
 """, 'cfx_image'),
     code(f"""
-#@title 🎬 動画を作る(文字 → 透明な WebM)
+#@title 🎬 動画を作る(文章 → 透明な WebM)
 #@markdown ▶ を押すと準備が始まります(1回目は 10〜15 分ほど)。GPU は **A100** がおすすめです。
 {BOOT}
 import cfx_video
 cfx_video.start()
 """, 'cfx_video'),
-    md(band('🧩', '素材から作る', '持っている画像・動画を渡して、動かしたり、透明に仕上げたりします', '#f0700f', '#0f9d74')),
+    md(band('🧩', '素材(画像/動画)から作る', '持っている画像・動画を渡して、動かしたり、透明に仕上げたりします', '#e0620a', '#0c8a66', tag='分類')),
     code(f"""
 #@title 🎞 画像から動画を作る(画像 → 透明な WebM)
 #@markdown 1枚の画像を動かして、背景を抜きます。▶ を押すと準備が始まります(1回目は 10〜15 分ほど)。GPU は **A100** がおすすめです。
@@ -92,7 +128,7 @@ cfx_i2v.start()
 import cfx_tools
 cfx_tools.start()
 """, 'cfx_tools'),
-    md(band('🛑', 'おわる', '使い終わったら GPU を止めます(つないだままだと、ユニットが減り続けます)', '#c0392b', '#ef8a80')),
+    md(band('🛑', 'おわる', '使い終わったら GPU を止めます(つないだままだと、ユニットが減り続けます)', '#c0392b', '#e8705f', tag='終了')),
     code('''
 #@title 🛑 GPU を止める(使い終わったら押す)
 #@markdown ドライブへのしまい込みが終わるのを待ってから、Colab の接続を切って GPU を止めます。作った素材は、ドライブの「CastFrost素材」に残ります。
@@ -116,7 +152,7 @@ _t.sleep(1)
 from google.colab import runtime as _rt
 _rt.unassign()
 ''', 'cfx_stop'),
-    md(band('📖', 'くわしい説明', 'ドライブの使い方・GPU の目安・困った時', '#455a64', '#90a4ae') + '''
+    md(band('📖', 'くわしい説明', 'ドライブの使い方・GPU の目安・困った時', '#455a64', '#7f97a3', tag='説明') + '''
 
 ### Google ドライブの使い方(消費量)
 

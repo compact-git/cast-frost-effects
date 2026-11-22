@@ -1,7 +1,7 @@
 # Cast Frost 素材メーカー:渡された素材(画像・動画)を受け取る・読み込む部品
 # - セルの中のアップロードボタン(ドライブを意識しなくてよい)
 # - ドライブの「CastFrost素材_入力」と「CastFrost素材」のフォルダから選ぶ(大きいファイル向け)
-import os, json, subprocess, shutil, time
+import os, re, json, subprocess, shutil, time, base64, itertools
 import numpy as np
 import cfx_common as C
 
@@ -55,6 +55,25 @@ def save_upload(value):
             f.write(bytes(content))
         paths.append(path)
     return paths
+
+
+def _upload_value(up):
+    """FileUpload の中身を取り出す(value が空でも、ipywidgets 7 の metadata / data から組み立てる)"""
+    v = getattr(up, 'value', None)
+    if v:
+        return v
+    md, data = getattr(up, 'metadata', None), getattr(up, 'data', None)
+    if md and data:
+        return {m.get('name'): {'content': d} for m, d in zip(md, data)}
+    return v
+
+
+def _safe_name(name):
+    n = os.path.basename(str(name or 'file')).replace('/', '_').replace('\\', '_')
+    return n[-120:] or 'file'
+
+
+_seq = itertools.count(1)
 
 
 def drive_inputs(kinds=('image', 'video')):
@@ -187,6 +206,51 @@ def fit_sdxl(img, area=1024 * 1024):
 
 
 # ---------------------------------------------------------------- 素材を選ぶ画面
+UPLOADER_HTML = r"""
+<div id="__ID__" style="display:none;margin:2px 0 4px">
+<label style="display:inline-block;background:#2f86d8;color:#ffffff;font:bold 14px sans-serif;padding:9px 18px;
+border-radius:10px;cursor:pointer;box-shadow:0 1px 3px rgba(0,0,0,.35)">📤 ファイルを選ぶ
+<input type="file" accept="__ACCEPT__" style="display:none"></label>
+<span class="st" style="margin-left:10px;font:13px sans-serif"></span>
+</div>
+<script>
+(async () => {
+  const root = document.getElementById('__ID__');
+  if (!root || !(window.google && google.colab && google.colab.kernel)) return;
+  const call = async (op, n, d) => {
+    const r = await google.colab.kernel.invokeFunction('__CB__', [op, n, d], {});
+    const j = r && r.data && r.data['application/json'];
+    if (j && j.ok === false) throw new Error(j.err);
+  };
+  try { await call('ready', '', ''); } catch (e) { return; }
+  root.style.display = 'block';
+  const inp = root.querySelector('input'), st = root.querySelector('.st'), lab = root.querySelector('label');
+  const b64 = (buf) => { let s = ''; const u = new Uint8Array(buf);
+    for (let i = 0; i < u.length; i += 0x8000) s += String.fromCharCode.apply(null, u.subarray(i, i + 0x8000));
+    return btoa(s); };
+  inp.addEventListener('change', async () => {
+    const f = inp.files[0]; if (!f) return;
+    lab.style.opacity = 0.5; lab.style.pointerEvents = 'none';
+    try {
+      await call('start', f.name, '');
+      const CH = 2 * 1024 * 1024;
+      for (let o = 0; o < f.size; o += CH) {
+        await call('chunk', '', b64(await f.slice(o, o + CH).arrayBuffer()));
+        st.textContent = '送っています… ' + Math.min(100, Math.round((o + CH) / f.size * 100)) + '%';
+      }
+      await call('end', f.name, '');
+      st.textContent = '✅ 送りました:' + f.name;
+    } catch (e) {
+      st.textContent = '⚠ 送れませんでした(' + e.message + ')';
+      try { await call('abort', '', ''); } catch (_) {}
+    }
+    lab.style.opacity = 1; lab.style.pointerEvents = ''; inp.value = '';
+  });
+})();
+</script>
+"""
+
+
 class Picker:
     """素材を選ぶ画面。① アップロード(おすすめ・ドライブを意識しなくてよい)② ドライブのフォルダから選ぶ"""
 
@@ -201,10 +265,15 @@ class Picker:
         if 'video' in kinds:
             acc += ['video/*', '.webm', '.gif', '.mov']
         what = '画像・動画' if len(kinds) == 2 else ('画像' if kinds == ('image',) else '動画')
-        self.up = W.FileUpload(accept=','.join(acc), multiple=False, description='📤 ファイルを選ぶ',
+        self.accept = ','.join(acc)
+        # 予備:ipywidgets の FileUpload(Colab の外や、下のボタンが出ない時だけ見える)
+        self.up = W.FileUpload(accept=self.accept, multiple=False, description='📤 ファイルを選ぶ',
                                layout=W.Layout(width='220px'))
-        self.up.style.button_color = '#ffffff'
-        self.up.observe(self._uploaded, names='value')
+        self.up.style.button_color = '#2f86d8'
+        self.up.style.font_weight = 'bold'
+        self.up.observe(self._uploaded, names=['value', 'data', '_counter'])
+        self._fh = None
+        self._up_path = None
         self.dd = W.Dropdown(options=[('(ドライブから選ぶ時は、ここを開く)', '')], value='',
                              layout=W.Layout(width='100%', max_width='620px'))
         self.dd.observe(self._picked, names='value')
@@ -219,7 +288,11 @@ class Picker:
         drive_box = W.Accordion(children=[W.VBox([dr_note, W.HBox([self.dd, self.rf])])])
         drive_box.set_title(0, '📁 ドライブから選ぶ(大きいファイル向け)')
         drive_box.selected_index = None
-        self.widget = W.VBox([W.HBox([self.up, up_note]), drive_box, self.cur])
+        # Colab では、Colab の仕組みでファイルを送るボタンを使う(FileUpload は値が届かないことがあるため)
+        self.js = W.Output()
+        self.up_row = W.HBox([self.up])
+        self.widget = W.VBox([self.js, self.up_row, up_note, drive_box, self.cur])
+        self._colab_uploader()
         self.refresh()
 
     def refresh(self):
@@ -234,12 +307,57 @@ class Picker:
 
     def _uploaded(self, ch):
         try:
-            paths = save_upload(ch['new'])
+            paths = save_upload(_upload_value(self.up))
         except Exception as e:
             self.ui.error(e)
             return
-        if paths:
+        if paths and paths[0] != self.path:
             self.set(paths[0], 'アップロード')
+
+    # ---- Colab の仕組みで送る(google.colab.kernel.invokeFunction で少しずつ送る)
+    def _colab_uploader(self):
+        try:
+            from google.colab import output as co
+        except Exception:
+            return
+        from IPython.display import HTML
+        name = f'cfx_upload_{os.getpid()}_{next(_seq)}'
+        co.register_callback(name, self._recv)
+        self.js.append_display_data(HTML(UPLOADER_HTML.replace('__CB__', name).replace('__ID__', name)
+                                         .replace('__ACCEPT__', self.accept)))
+
+    def _recv(self, op, name='', data=''):
+        from IPython.display import JSON
+        try:
+            if op == 'ready':
+                self.up_row.layout.display = 'none'      # Colab のボタンが出たので、予備のボタンは隠す
+            elif op == 'start':
+                self._close()
+                os.makedirs(UPLOAD_DIR, exist_ok=True)
+                self._up_path = os.path.join(UPLOAD_DIR, f'{int(time.time())}_{_safe_name(name)}')
+                self._fh = open(self._up_path, 'wb')
+                self.cur.value = C.msg_html('warn', f'⏳ 受け取っています:{C.esc(_safe_name(name))}')
+            elif op == 'chunk':
+                self._fh.write(base64.b64decode(data))
+            elif op == 'end':
+                self._close()
+                self.set(self._up_path, 'アップロード')
+            elif op == 'abort':
+                self._close()
+                if self._up_path and os.path.exists(self._up_path):
+                    os.remove(self._up_path)
+            return JSON({'ok': True})
+        except Exception as e:
+            self._close()
+            return JSON({'ok': False, 'err': str(e)})
+
+    def _close(self):
+        if self._fh:
+            try:
+                self._fh.close()
+            except Exception:
+                pass
+            self._fh = None
 
     def _picked(self, ch):
         if ch['new']:
@@ -275,7 +393,7 @@ class Picker:
             detail = f'中身を読めませんでした({C.esc(e)})'
         self.cur.value = (C.CSS + '<div class="cfx cfx-ok" style="display:flex;gap:12px;align-items:center">'
                           + (f'<div style="width:160px">{thumb}</div>' if thumb else '')
-                          + f'<div>✅ <b>{label}</b>({src}):{C.esc(os.path.basename(path))}<br>'
+                          + f'<div>✅ <b>{label}</b>({src}):{C.esc(re.sub(r"^\d{9,}_", "", os.path.basename(path)))}<br>'
                           f'<small>{C.esc(detail)}・{mb:.1f}MB</small></div></div>')
         if self.on_change:
             self.on_change(path, k)

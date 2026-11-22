@@ -3,7 +3,7 @@
 import os, sys, re, gc, io, json, time, base64, shutil, threading, subprocess, traceback, html, platform
 from datetime import datetime
 
-VERSION = '0.2.0'
+VERSION = '0.2.1'
 AUTHOR = 'made by compact'
 SITE_URL = 'https://rider.tokyo/apps/cast/effects/'
 APP_URL = 'https://cast.rider.tokyo/'
@@ -463,7 +463,8 @@ CSS = """
 .cfx-prev img,.cfx-prev video{display:block;max-width:320px;max-height:320px}
 .cfx-chk{background-color:#fff;background-image:linear-gradient(45deg,#c8c8c8 25%,transparent 25%),linear-gradient(-45deg,#c8c8c8 25%,transparent 25%),linear-gradient(45deg,transparent 75%,#c8c8c8 75%),linear-gradient(-45deg,transparent 75%,#c8c8c8 75%);background-size:16px 16px;background-position:0 0,0 8px,8px -8px,-8px 0}
 .cfx-black{background:#000}.cfx-white{background:#fff}.cfx-green{background:#00b140}
-.cfx-meta{font-size:13px;color:#4d6680;word-break:break-all}
+.cfx-meta{font-size:13px;color:#35536f;word-break:break-all;background:#eef5fc;border:1px solid #d3e3f3;border-radius:8px;padding:4px 10px;margin:2px 0}
+.cfx-card .cfx-meta,.cfx-head .cfx-meta{background:none;border:0;padding:0}
 .cfx-meta b{color:#16304a}
 .cfx a{color:#2f86d8}
 </style>
