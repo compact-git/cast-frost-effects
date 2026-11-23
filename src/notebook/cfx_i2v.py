@@ -14,7 +14,70 @@ LORA_CANDS = [('lightx2v/Wan2.1-Distill-Loras', ('i2v', 'rank64')),
 CLIP_FILE = 'models_clip_open-clip-xlm-roberta-large-vit-huge-14.pth'
 MATTES = [('物・キャラ(背景を切り抜く)', 'cut'), ('光・炎・エフェクト(黒い背景から抜く)', 'luma'),
           ('抜かない(背景つきのまま)', 'none')]
-LENGTHS = [('2秒', 2), ('3秒', 3), ('4秒', 4), ('5秒(いちばん長い)', 5)]
+LENGTHS = [('2秒', 2), ('3秒', 3), ('4秒', 4), ('5秒(1回で作れる長さ)', 5),
+           ('10秒(5秒ずつ 2回作ってつなぐ)', 10), ('15秒(3回)', 15), ('20秒(4回)', 20),
+           ('25秒(5回)', 25), ('30秒(6回)', 30)]
+SEG_FRAMES = 81           # 1回で作るコマ数(16fps で約5秒)
+
+
+def chain_plan(sec, loop):
+    """長さから、何回作ってつなぐか・1回のコマ数・最後に残すコマ数を決める。
+    2回目からは「前の最後のコマ」を元の画像にするので、1コマ目は重なる(落とす)= 1回ごとに 80 コマ増える"""
+    import cfx_video as V
+    import cfx_wan as WW
+    if sec <= 5:
+        nf, _ = V.gen_frames_for(sec, loop, 'repeat')
+        return 1, nf, None
+    if loop == 'pingpong':
+        want = int(round(sec / 2.0 * WW.FPS)) + 1
+    else:
+        # なめらかなループは終わりの 8 コマを始まりに重ねるので 0.5 秒短くなる(そのために 1回ぶん余計に作らない)
+        want = int(round(sec * WW.FPS))
+    if want <= SEG_FRAMES:
+        return 1, WW.frames_for_seconds(want / WW.FPS), want
+    segs = 1 + int(np.ceil((want - SEG_FRAMES) / (SEG_FRAMES - 1)))
+    return segs, SEG_FRAMES, want
+
+
+def match_colors(frames, ref):
+    """つなぎ目で色がずれないように、次の区切りの色を、前の区切りの最後のコマに合わせる
+    (1コマ目と ref の色の平均・ばらつきの差を、区切り全体に同じだけかける。かけすぎないよう制限する)"""
+    if not frames:
+        return frames
+    a0 = frames[0].astype(np.float32).reshape(-1, 3)
+    r = ref.astype(np.float32).reshape(-1, 3)
+    gain = np.clip((r.std(0) + 1e-3) / (a0.std(0) + 1e-3), 0.9, 1.1)
+    off = np.clip(r.mean(0) - a0.mean(0) * gain, -12.0, 12.0)
+    if np.all(np.abs(gain - 1) < 0.005) and np.all(np.abs(off) < 0.5):
+        return frames
+    return [np.clip(f.astype(np.float32) * gain + off, 0, 255).astype(np.uint8) for f in frames]
+
+
+def gen_chain(gen, rgb, prompts, segs, nf, want, seed, steps, progress=None, log=print):
+    """5秒ずつ順に作って、前の最後のコマから次を作り、1本につなぐ(RGB のコマのリストを返す)
+    prompts:区切りごとの英語(足りない時は最後のものをくり返す)"""
+    from PIL import Image
+    out, used, size, cur = [], None, None, rgb
+    for j in range(segs):
+        if segs > 1:
+            log(f'{j + 1} / {segs} 回目(つなぐ区切り)を作っています…')
+        pr = prompts[min(j, len(prompts) - 1)]
+        cb = (lambda d, t, j=j: progress(j * t + d, segs * t)) if progress else None
+        fr, sd, size = gen.generate(cur, pr, nf, (used + j) if used is not None else seed, steps, progress=cb)
+        if used is None:
+            used = sd
+        fr = [np.asarray(f) for f in fr]
+        if j == 0:
+            out = fr
+        else:
+            fr = match_colors(fr, out[-1])
+            out += fr[1:]          # 1コマ目は前の最後のコマとほぼ同じなので落とす
+        cur = Image.fromarray(out[-1], 'RGB')
+        if want and len(out) >= want:
+            break
+    if want:
+        out = out[:want]
+    return out, used, size
 BG = {'cut': (128, 128, 128), 'luma': (0, 0, 0), 'none': (255, 255, 255)}
 HINT = {'cut': ' The background is plain flat gray. The camera is static.',
         'luma': ' The background is pure black. The camera is static.', 'none': ''}
@@ -195,8 +258,19 @@ def _build_form(ui, maker, plan):
     sec3 = W.HTML(C.section_html('③ 長さと仕上げ', 'i2v'))
     count = W.IntSlider(value=1, min=1, max=4, description='本数', style=st, layout=L('420px'))
     seed = W.IntText(value=-1, description='シード', style=st, layout=L('260px'))
-    length = W.Dropdown(options=LENGTHS, value=5, description='長さ', style=st, layout=L('420px'))
+    length = W.Dropdown(options=LENGTHS, value=5, description='長さ', style=st, layout=L('480px'))
+    length_note = W.HTML('')
+
+    def _len_note(ch=None):
+        n = chain_plan(length.value, loop.value)[0]
+        length_note.value = ('' if n <= 1 else C.CSS + (
+            f'<div class="cfx cfx-meta">5秒ずつ <b>{n} 回</b>作って、前の最後のコマから続けて 1本につなぎます。'
+            f'作る時間も約 {n} 倍かかります(A100 で 1回 3〜5分ほど。L4 ではもっとかかります)。'
+            'くわしい設定の「区切りごとの動き」で、区切りごとに動きを変えられます。</div>'))
     loop = W.Dropdown(options=V.LOOPS, value='none', description='ループ', style=st, layout=L('420px'))
+    length.observe(_len_note, names='value')
+    loop.observe(_len_note, names='value')
+    _len_note()
     smooth = W.Checkbox(value=True, description='なめらかにする(コマを補って 16fps → 32fps)', indent=False)
     thr = W.FloatSlider(value=0.06, min=0.0, max=0.3, step=0.01, description='黒を消す強さ', style=st,
                         layout=L('460px'))
@@ -205,10 +279,14 @@ def _build_form(ui, maker, plan):
     en = W.Textarea(placeholder='ここに英語を書くと、翻訳を使わずにこの英語で作ります', description='英語で直接書く',
                     style=st, layout=W.Layout(width='100%', height='60px'))
     save = W.Checkbox(value=C.drive_ok(), description='できたものをドライブにも保存する', indent=False)
-    adv = C.Fold(W, '⚙ 高度な設定(ふつうは触らなくて大丈夫)', W.VBox([thr, flicker, steps, en, save])).widget
+    parts = W.Textarea(placeholder='5秒より長い時だけ使います。1行に1つ、区切りの順に動きを書きます(日本語でOK)。'
+                                   '行が足りない時は、最後の行(なければ ② の動き)をくり返します。\n'
+                                   '例:\n手を振る\nくるっと回る\nおじぎをする',
+                       description='区切りごとの動き', style=st, layout=W.Layout(width='100%', height='96px'))
+    adv = C.Fold(W, '⚙ 高度な設定(ふつうは触らなくて大丈夫)', W.VBox([thr, flicker, steps, en, parts, save])).widget
     go = ui.big_button('✨ 動かす')
     ui.form.children = (sec1, picker.widget, sec2, prompt, matte, matte_note, sec3, count, W.HBox([seed]),
-                        length, loop, smooth, adv, go)
+                        length, length_note, loop, smooth, adv, go)
 
     def run(ss, n, first_seed):
         go.disabled = True
@@ -225,13 +303,25 @@ def _build_form(ui, maker, plan):
             full = pe.rstrip(' .') + '.' + HINT[ss['matte']]
             img = MD.read_image(src)
             rgb = Image.fromarray(cfx_matte.over(np.asarray(img), BG[ss['matte']]), 'RGB')
-            nf, _ = V.gen_frames_for(ss['sec'], ss['loop'], 'repeat')
+            segs, nf, want = chain_plan(ss['sec'], ss['loop'])
+            prompts = [full]
+            if segs > 1 and ss.get('parts_en') is None and ss.get('parts', '').strip():
+                lines = [x.strip() for x in ss['parts'].splitlines() if x.strip()]
+                if any(C.has_japanese(x) for x in lines):
+                    ui.log('区切りごとの動きを英語に直しています…')
+                tr = C.translator(ui.log)
+                ss['parts_en'] = [x if not C.has_japanese(x) else tr.translate(x, 'video') for x in lines]
+            if segs > 1 and ss.get('parts_en'):
+                prompts = [x.rstrip(' .') + '.' + HINT[ss['matte']] for x in ss['parts_en'] if x]
             for i in range(n):
                 t0 = time.time()
                 sd = first_seed + i if first_seed >= 0 else random.randint(0, 2 ** 31 - 1)
-                ui.progress(0, ss['steps'], f'{i + 1} / {n} 本目を作っています…')
-                fr, used, (w, h) = maker.gen.generate(rgb, full, nf, sd, ss['steps'],
-                                                       progress=lambda d, t: ui.progress(d, t))
+                ui.progress(0, ss['steps'], f'{i + 1} / {n} 本目を作っています…'
+                            + (f'(5秒ずつ {segs} 回作ってつなぎます)' if segs > 1 else ''))
+                C.free_memory()
+                fr, used, (w, h) = gen_chain(maker.gen, rgb, prompts, segs, nf, want, sd, ss['steps'],
+                                             progress=lambda d, t: ui.progress(d, t), log=ui.log)
+                sd = used
                 if ss['matte'] == 'luma':
                     ui.log('黒い背景を透明にしています…')
                     frames = [cfx_matte.luma_key(f, ss['thr']) for f in fr]
@@ -261,8 +351,11 @@ def _build_form(ui, maker, plan):
                 lines = [f'<b>{C.esc(name)}</b>(WebM・{info["width"]}×{info["height"]}・{info["fps"]}fps・'
                          f'{info["seconds"]:.1f}秒・{info["bytes"] / 1e6:.1f}MB)',
                          f'🎞 {C.esc(os.path.basename(src))} から・シード {sd}・{time.time() - t0:.0f}秒・'
-                         f'透明:{"あり" if pr["alpha"] else "なし"}',
+                         f'透明:{"あり" if pr["alpha"] else "なし"}'
+                         + (f'・5秒ずつ {segs} 回作ってつないでいます' if segs > 1 else ''),
                          '英語:' + C.esc(pe)]
+                if segs > 1 and len(prompts) > 1:
+                    lines.append('区切りごとの動き:' + ' → '.join(C.esc(x.split('.')[0]) for x in prompts))
                 lines += ['⚠ ' + C.esc(c) for c in info['changes']]
                 lines.append('ドライブに保存しました' if saved else 'ドライブには保存していません')
                 ui.add_card('video', path, prev, lines, lambda s2=s2: run(s2, 1, -1))
@@ -282,7 +375,7 @@ def _build_form(ui, maker, plan):
             return
         ss = dict(src=picker.path, prompt=prompt.value, en=en.value.strip(), matte=matte.value, sec=length.value,
                   loop=loop.value, smooth=smooth.value, thr=thr.value, flicker=flicker.value, steps=steps.value,
-                  save=save.value)
+                  save=save.value, parts=parts.value)
         run(ss, count.value, seed.value)
 
     go.on_click(on_go)
