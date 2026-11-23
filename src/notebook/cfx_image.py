@@ -1,7 +1,7 @@
 # Cast Frost 素材メーカー:🖼 静止画を作る(背景が透明な PNG)
 # SDXL + LayerDiffuse(最初から透明な部分を持った画像を作る)
 # 予備:ふつうに作ってから BiRefNet で背景を切り抜く
-import os, sys, random, time
+import os, json, sys, random, time
 import cfx_common as C
 
 LAYERDIFFUSE_GIT = 'https://github.com/rootonchair/diffuser_layerdiffuse.git'
@@ -36,6 +36,26 @@ LD_LORA = ('rootonchair/diffuser_layerdiffuse', 'diffuser_layer_xl_transparent_a
 LD_DECODER = ('LayerDiffusion/layerdiffusion-v1', 'vae_transparent_decoder.safetensors')
 LD_ENCODER = 'vae_transparent_encoder.safetensors'
 VAE_FIX = 'madebyollin/sdxl-vae-fp16-fix'
+
+
+def fix_vae_config(vae, vdir=None):
+    """LayerDiffuse の TransparentVAEDecoder は、親の AutoencoderKL に引数を「順番」で渡している。
+    新しい diffusers では途中に shift_factor が増えたので、値が1つずつずれて
+    latents_std=False・force_upcast=True などになる(描き直しが止まり、仕上げで余計にメモリを使う)。
+    VAE の config.json の正しい値に戻す"""
+    want = dict(shift_factor=None, latents_mean=None, latents_std=None, force_upcast=False)
+    if vdir:
+        try:
+            with open(os.path.join(vdir, 'config.json'), encoding='utf-8') as f:
+                cfg = json.load(f)
+            for k in ('shift_factor', 'latents_mean', 'latents_std', 'scaling_factor'):
+                if k in cfg:
+                    want[k] = cfg[k]
+        except Exception:
+            pass
+    want['force_upcast'] = False     # fp16-fix の VAE なので、32 ビットに直さなくてよい
+    vae.register_to_config(**want)
+    return vae
 
 
 class ImageMaker:
@@ -92,7 +112,7 @@ class ImageMaker:
         ddir = C.fetch_repo(LD_DECODER[0], [LD_DECODER[1]], 'layerdiffuse-decoder', cache=cache, log=log)
         log('モデルを GPU に読み込んでいます…')
         vae = TransparentVAEDecoder.from_pretrained(vdir, torch_dtype=dt)
-        vae.config.force_upcast = False
+        fix_vae_config(vae, vdir)
         vae.set_transparent_decoder(load_file(os.path.join(ddir, LD_DECODER[1])))
         kw = dict(vae=vae, torch_dtype=dt, use_safetensors=True, add_watermarker=False)
         if variant:
