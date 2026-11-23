@@ -159,9 +159,7 @@ def _build_form(ui, tools, g):
     cfg = W.FloatSlider(value=6.0, min=1.0, max=12.0, step=0.5, description='CFG', style=st, layout=L('420px'))
     en = W.Textarea(placeholder='ここに英語を書くと、翻訳を使わずにこの英語で描き直します', description='英語で直接書く',
                     style=st, layout=W.Layout(width='100%', height='60px'))
-    adv = W.Accordion(children=[W.VBox([model, steps, cfg, en])])
-    adv.set_title(0, '⚙ 高度な設定(ふつうは触らなくて大丈夫)')
-    adv.selected_index = None
+    adv = C.Fold(W, '⚙ 高度な設定(ふつうは触らなくて大丈夫)', W.VBox([model, steps, cfg, en])).widget
     save = W.Checkbox(value=C.drive_ok(), description='できたものをドライブにも保存する', indent=False)
 
     def on_model(c):

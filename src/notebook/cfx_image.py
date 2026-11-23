@@ -280,11 +280,9 @@ def _build_form(ui, maker, g):
         mm = MODELS[c['new']]
         steps.value, cfg.value = mm['steps'], mm['cfg']
     model.observe(on_model, names='value')
-    adv = W.Accordion(children=[W.VBox([
+    adv = C.Fold(W, '⚙ 高度な設定(ふつうは触らなくて大丈夫)', W.VBox([
         W.HTML('<small>ふつうは触らなくて大丈夫です。モデルを変えると、最初の1回だけダウンロード(約7GB)に時間がかかります。</small>'),
-        model, method, steps, cfg, neg, en, save, cache])])
-    adv.set_title(0, '⚙ 高度な設定(ふつうは触らなくて大丈夫)')
-    adv.selected_index = None
+        model, method, steps, cfg, neg, en, save, cache])).widget
     make_btn = ui.big_button('✨ 作る')
     ui.form.children = (prompt, W.HBox([count]), W.HBox([seed, seed_note]), size, adv, make_btn)
 

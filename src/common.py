@@ -3,6 +3,7 @@
 #   [[p:g-image|静止画を作る]] → このサイトのページへのリンク
 #   [[help:g-fx-auto|自動の演出]] → Cast Frost ヘルプのページへのリンク
 #   [[ui:✨ 作る]]       → ノートブックの画面のボタン・項目の名前
+#   [[play]] / [[stop]]  → Colab のセルの再生ボタン・停止ボタンの絵
 #   [[cell:🖼 静止画を作る]] → ノートブックのセル
 #   [[key:Ctrl+Enter]]   → キー
 import re
@@ -14,7 +15,14 @@ def tab(k):
     i, n = TABS[k]
     return f'<a class="tabchip" href="{HELP}r-{k}.html" target="_blank" rel="noopener">{i} {n}</a>'
 
+CBTN = ('<svg class="cbtn" viewBox="0 0 24 24" width="20" height="20" role="img" aria-label="{label}">'
+        '<circle cx="12" cy="12" r="11" fill="#5f6368"/>{inner}</svg>')
+PLAY = CBTN.format(label='再生ボタン', inner='<path d="M9.5 7.2v9.6l7.4-4.8z" fill="#fff"/>')
+STOP = CBTN.format(label='停止ボタン', inner='<rect x="8" y="8" width="8" height="8" rx="1.2" fill="#fff"/>')
+
+
 def expand(s):
+    s = s.replace('[[play]]', PLAY).replace('[[stop]]', STOP)
     s = re.sub(r'\[\[tab:(\w+)\]\]', lambda m: tab(m.group(1)), s)
     s = re.sub(r'\[\[help:([\w-]+)\|([^\]]+)\]\]', lambda m: f'<a href="{HELP}{m.group(1)}.html" target="_blank" rel="noopener">{m.group(2)} ↗</a>', s)
     s = re.sub(r'\[\[p:([\w-]+)\|([^\]]+)\]\]', r'<a href="\1.html">\2</a>', s)

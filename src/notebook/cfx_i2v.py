@@ -205,9 +205,7 @@ def _build_form(ui, maker, plan):
     en = W.Textarea(placeholder='ここに英語を書くと、翻訳を使わずにこの英語で作ります', description='英語で直接書く',
                     style=st, layout=W.Layout(width='100%', height='60px'))
     save = W.Checkbox(value=C.drive_ok(), description='できたものをドライブにも保存する', indent=False)
-    adv = W.Accordion(children=[W.VBox([thr, flicker, steps, en, save])])
-    adv.set_title(0, '⚙ 高度な設定(ふつうは触らなくて大丈夫)')
-    adv.selected_index = None
+    adv = C.Fold(W, '⚙ 高度な設定(ふつうは触らなくて大丈夫)', W.VBox([thr, flicker, steps, en, save])).widget
     go = ui.big_button('✨ 動かす')
     ui.form.children = (sec1, picker.widget, sec2, prompt, matte, matte_note, sec3, count, W.HBox([seed]),
                         length, loop, smooth, adv, go)

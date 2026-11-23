@@ -3,7 +3,7 @@
 import os, sys, re, gc, io, json, time, base64, shutil, threading, subprocess, traceback, html, platform
 from datetime import datetime
 
-VERSION = '0.2.5'
+VERSION = '0.2.6'
 AUTHOR = 'made by compact'
 SITE_URL = 'https://rider.tokyo/apps/cast/effects/'
 APP_URL = 'https://cast.rider.tokyo/'
@@ -459,6 +459,9 @@ def diag_text(extra=None):
 # ---------------------------------------------------------------- 画面の部品
 CSS = """
 <style>
+.cfx-btn,.cfx-btn button{color:#ffffff !important}
+.cfx-fold>.cfx-fold-btn{background:#3c5568 !important;color:#ffffff !important;font-weight:bold;text-align:left}
+.cfx-fold-body{border-left:3px solid #3c5568;padding-left:10px;margin:2px 0 6px 6px}
 .cfx{font-family:"M PLUS Rounded 1c","Hiragino Maru Gothic ProN","Yu Gothic UI","Meiryo",system-ui,sans-serif;color:#16304a;line-height:1.7}
 .cfx-banner{display:flex;gap:14px;align-items:center;color:#fff;border-radius:16px;padding:14px 18px;margin:4px 0 6px;box-shadow:0 3px 10px rgba(0,0,0,.12)}
 .cfx-bicon{font-size:34px;line-height:1;background:rgba(255,255,255,.22);border-radius:14px;padding:8px 10px}
@@ -543,6 +546,31 @@ def esc(s):
     return html.escape(str(s))
 
 
+class Fold:
+    """開く/閉じるの箱(Colab では Accordion が出ないことがあるので、ボタンと箱で作る)"""
+
+    def __init__(self, W, title, child, opened=False):
+        self.title = title
+        self.btn = W.Button(layout=W.Layout(width='auto', min_width='320px'))
+        self.btn.style.button_color = '#3c5568'
+        self.btn.add_class('cfx-fold-btn')
+        self.btn.add_class('cfx-btn')
+        self.body = W.VBox([child])
+        self.body.add_class('cfx-fold-body')
+        self.btn.on_click(lambda b: self.toggle())
+        self.widget = W.VBox([self.btn, self.body])
+        self.widget.add_class('cfx-fold')
+        self.set(opened)
+
+    def set(self, opened):
+        self.opened = bool(opened)
+        self.body.layout.display = None if self.opened else 'none'
+        self.btn.description = ('▾ ' if self.opened else '▸ ') + self.title
+
+    def toggle(self):
+        self.set(not self.opened)
+
+
 class UI:
     """セルの中に出す画面(ipywidgets)。静止画と動画で使い回す"""
 
@@ -570,12 +598,12 @@ class UI:
         self.bg.observe(lambda c: self.redraw(), names='value')
         self.diag_btn = W.Button(description='📋 診断情報を出す', layout=W.Layout(width='180px'))
         self.diag_box = W.Textarea(layout=W.Layout(width='100%', height='160px', display='none'))
+        self.diag_btn.style.button_color = '#3c5568'
+        self.diag_btn.add_class('cfx-btn')
         self.diag_btn.on_click(lambda b: self.show_diag())
         self.extra_diag = []
-        logs = W.Accordion(children=[W.VBox([self.log_out, self.diag_btn, self.diag_box])])
-        logs.set_title(0, '📄 くわしい記録(困った時に開く)')
-        logs.selected_index = None
-        self.logs = logs
+        self.logs = Fold(W, '📄 くわしい記録', W.VBox([self.log_out, self.diag_btn, self.diag_box]))
+        logs = self.logs.widget
         self.cards = []
         # お知らせと進み具合は、入力欄(ボタン)のすぐ下に出す(準備中は入力欄が空なので、見出しのすぐ下になる)
         self.root = W.VBox([self.head, self.form, self.status, self.bar, self.bg, self.results,
@@ -592,6 +620,7 @@ class UI:
         b = W.Button(description=text, layout=W.Layout(width='220px', height='46px'))
         b.style.button_color = color or ACCENTS.get(self.accent, ACCENTS['image'])[0]
         b.style.font_weight = 'bold'
+        b.add_class('cfx-btn')
         try:
             b.style.text_color = 'white'
         except Exception:
@@ -618,15 +647,23 @@ class UI:
         self.bar.layout.visibility = 'hidden'
 
     def error(self, e):
+        try:
+            import sys
+            print('\n―――― うまくいかなかった時の記録 ――――', file=sys.stderr)
+            traceback.print_exc()
+            print(f'{type(e).__name__}: {e}', file=sys.stderr)
+            print(gpu_mem_text(), file=sys.stderr)
+        except Exception:
+            pass
         with self.log_out:
             traceback.print_exc()
             print(f'{type(e).__name__}: {e}')
             if 'memory' in str(e).lower() or 'OutOfMemory' in type(e).__name__:
                 print(gpu_mem_text())
         self.hide_bar()
-        self.logs.selected_index = 0   # くわしい記録を開いておく
+        self.logs.set(True)   # くわしい記録を開いておく
         self.say('⚠ ' + esc(friendly_error(e)) +
-                 '<br><small>くわしい内容は、この画面のいちばん下の「くわしい記録(困った時に開く)」に出ています。</small>', 'err')
+                 '<br><small>くわしい内容は、この画面のいちばん下の「📄 くわしい記録」と、セルのいちばん下の出力に出ています。</small>', 'err')
 
     def show_diag(self):
         self.diag_box.value = diag_text(self.extra_diag)

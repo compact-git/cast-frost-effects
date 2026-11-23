@@ -271,6 +271,7 @@ class Picker:
                                layout=W.Layout(width='220px'))
         self.up.style.button_color = '#2f86d8'
         self.up.style.font_weight = 'bold'
+        self.up.add_class('cfx-btn')
         self.up.observe(self._uploaded, names=['value', 'data', '_counter'])
         self._fh = None
         self._up_path = None
@@ -278,6 +279,8 @@ class Picker:
                              layout=W.Layout(width='100%', max_width='620px'))
         self.dd.observe(self._picked, names='value')
         self.rf = W.Button(description='🔄', tooltip='ドライブのフォルダを読み直す', layout=W.Layout(width='48px'))
+        self.rf.style.button_color = '#3c5568'
+        self.rf.add_class('cfx-btn')
         self.rf.on_click(lambda b: self.refresh())
         self.cur = W.HTML(C.msg_html('warn', f'まだ{what}が選ばれていません。'))
         up_note = W.HTML(C.CSS + f'<div class="cfx cfx-meta">パソコンの{what}を選びます(おすすめ)。'
@@ -285,9 +288,7 @@ class Picker:
         dr_note = W.HTML(C.CSS + '<div class="cfx cfx-meta">大きいファイルは、Google ドライブの '
                          '<b>マイドライブ / CastFrost素材_入力</b> に入れてから 🔄 を押して選びます'
                          '(作った素材の <b>CastFrost素材</b> からも選べます)。</div>')
-        drive_box = W.Accordion(children=[W.VBox([dr_note, W.HBox([self.dd, self.rf])])])
-        drive_box.set_title(0, '📁 ドライブから選ぶ(大きいファイル向け)')
-        drive_box.selected_index = None
+        drive_box = C.Fold(W, '📁 ドライブから選ぶ(大きいファイル向け)', W.VBox([dr_note, W.HBox([self.dd, self.rf])])).widget
         # Colab では、Colab の仕組みでファイルを送るボタンを使う(FileUpload は値が届かないことがあるため)
         self.js = W.Output()
         self.up_row = W.HBox([self.up])
